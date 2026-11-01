@@ -47,6 +47,7 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
   log.push(`cartes suivies : ${ok} cotes sur ${done}`);
 
   // 1 bis) cartes les plus demandées : tous les états bruts et toutes les notes gradées (toutes sociétés)
+  // (seulement les cotes issues de ventes réelles : pas d'estimation par coefficient)
   // une seule récupération des sources par carte, puis chaque état / note est calculé sans requête supplémentaire
   const popular = await (await fetch('/api/popular?limit=' + MAX_POPULAR)).json();
   let pk = 0; const pcards = [];
@@ -56,7 +57,7 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
     const sels = [...R.RAW.map(r => ({ kind: 'raw', cond: r.k })), ...Object.values(R.COMPANIES).flatMap(c => c.grades.map(g => ({ kind: 'graded', co: c.id, g: g.id })))];
     for (const sel of sels) {
       const v = R.priceFor(sel, base.card, meta.variant, 'EU', base.q, !!meta.vintage);
-      if (v.value != null && v.rel !== 'none') { pcards.push({ key: R.historyKey(meta.cardId, meta.variant, sel), eur: Math.round(v.value * 100) / 100 }); pk++; }
+      if (v.value != null && v.rel !== 'none' && v.src !== 'model') { pcards.push({ key: R.historyKey(meta.cardId, meta.variant, sel), eur: Math.round(v.value * 100) / 100 }); pk++; }
     }
   });
   for (let i = 0; i < pcards.length; i += 900) await post('/api/bulk', { cards: pcards.slice(i, i + 900) });
