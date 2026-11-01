@@ -82,6 +82,9 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
   });
   await flush();
   log.push(`catalogue : ${got} cotes calculées sur ${todo.length} (${jobs.length} cartes ≥ ${MIN_USD} $), ${sent} enregistrées`);
+  // alertes de prix des comptes Premium : notifications push après le relevé
+  const al = await post('/api/alerts/run', {});
+  log.push(`alertes : ${al.fired ?? 0} déclenchées, ${al.pushed ?? 0} notifications envoyées${al.error ? ' (erreur ' + al.error + ')' : ''}`);
   const st = await (await fetch('/api/stats')).json();
   log.push(`base : ${st.points} relevés, ${st.cards} cartes, ${st.days} jours, ${st.tracked} cartes suivies`);
   return log;
