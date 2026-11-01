@@ -1,11 +1,12 @@
 // Relevé quotidien des cotes PokeValuate (base d'historique des prix)
 // Ouvre l'app en mode robot : le calcul des cotes est exactement celui de l'app (croisement des sources).
 // 1) cartes suivies (consultées par les utilisateurs ou au portfolio) : toutes les sources, ventes eBay comprises
+// 1 bis) cartes les plus demandées : états bruts + notes gradées de toutes les sociétés
 // 2) catalogue complet (cartes cotées ≥ MIN_USD) : sources gratuites (Cardmarket via TCGdex + TCGplayer)
 // Les cotes sont enregistrées sur le serveur de l'app (Cloudflare D1), authentifiées par le jeton OIDC de GitHub.
 import { chromium } from 'playwright';
 const APP = 'https://pokevaluate.thefatmouse-yt.workers.dev';
-const MAX_TRACKED = Number(process.env.MAX_TRACKED || 3000), MAX_BULK = Number(process.env.MAX_BULK || 35000), MIN_USD = Number(process.env.MIN_USD || 2);
+const MAX_TRACKED = Number(process.env.MAX_TRACKED || 3000), MAX_BULK = Number(process.env.MAX_BULK || 35000), MIN_USD = Number(process.env.MIN_USD || 2), MAX_POPULAR = Number(process.env.MAX_POPULAR || 300);
 
 async function token() {
   const r = await fetch(`${process.env.ACTIONS_ID_TOKEN_REQUEST_URL}&audience=pokevaluate`, { headers: { Authorization: `Bearer ${process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}` } });
@@ -21,7 +22,7 @@ await p.goto(APP + '/?robot', { waitUntil: 'domcontentloaded' });
 await p.waitForFunction(() => window.__pvRobot, null, { timeout: 60000 });
 await p.waitForTimeout(3000);   // taux de change chargés
 
-const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD }) => {
+const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULAR }) => {
   const R = window.__pvRobot, log = [];
   const post = async (path, body) => {
     const r = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + await window.pvToken() }, body: JSON.stringify(body) });
@@ -45,6 +46,22 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD }) => {
   }
   log.push(`cartes suivies : ${ok} cotes sur ${done}`);
 
+  // 1 bis) cartes les plus demandées : tous les états bruts et toutes les notes gradées (toutes sociétés)
+  // une seule récupération des sources par carte, puis chaque état / note est calculé sans requête supplémentaire
+  const popular = await (await fetch('/api/popular?limit=' + MAX_POPULAR)).json();
+  let pk = 0; const pcards = [];
+  await pool(popular, 4, async ({ meta }) => {
+    const base = await R.revalue({ ...meta, sel: { kind: 'raw', cond: 'NM' } }, 'EU');
+    if (!base) return;
+    const sels = [...R.RAW.map(r => ({ kind: 'raw', cond: r.k })), ...Object.values(R.COMPANIES).flatMap(c => c.grades.map(g => ({ kind: 'graded', co: c.id, g: g.id })))];
+    for (const sel of sels) {
+      const v = R.priceFor(sel, base.card, meta.variant, 'EU', base.q, !!meta.vintage);
+      if (v.value != null && v.rel !== 'none') { pcards.push({ key: R.historyKey(meta.cardId, meta.variant, sel), eur: Math.round(v.value * 100) / 100 }); pk++; }
+    }
+  });
+  for (let i = 0; i < pcards.length; i += 900) await post('/api/bulk', { cards: pcards.slice(i, i + 900) });
+  log.push(`cartes les plus demandées : ${popular.length} cartes, ${pk} cotes (états bruts + notes gradées)`);
+
   // 2) catalogue, sources gratuites, cartes les plus chères d'abord
   const cat = await R.loadCatalog();
   const jobs = [];
@@ -67,6 +84,6 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD }) => {
   const st = await (await fetch('/api/stats')).json();
   log.push(`base : ${st.points} relevés, ${st.cards} cartes, ${st.days} jours, ${st.tracked} cartes suivies`);
   return log;
-}, { MAX_TRACKED, MAX_BULK, MIN_USD });
+}, { MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULAR });
 console.log(out.join('\n'));
 await b.close();
