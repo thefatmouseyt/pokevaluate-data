@@ -4,7 +4,7 @@ const b = await chromium.launch(); const p = await b.newPage(); p.setDefaultTime
 await p.goto('https://pokevaluate.thefatmouse-yt.workers.dev/?robot'); await p.waitForFunction(() => window.__pvRobot);
 const out = await p.evaluate(async () => {
   const R = window.__pvRobot, cat = await R.loadCatalog(), log = [];
-  const ents = cat.entries.filter(e => /munch/i.test(e.name + ' ' + e.setName + ' ' + e.fullName)).slice(0, 8);
+  const ents = cat.entries.filter(e => e.lang === 'ja' && /SM-P/.test(e.number) && /^(28[2-8])\//.test(e.number)).slice(0, 10);
   for (const e of ents) {
     log.push(`\n## ${e.name} ${e.number} [${e.lang}] ${e.setName} id ${e.id} rows ${JSON.stringify(e.rows)}`);
     const r = await fetch(`/ppt/cards?tcgPlayerId=${e.id}&language=${e.lang === 'ja' ? 'japanese' : 'english'}&includeEbay=true&days=90`);
