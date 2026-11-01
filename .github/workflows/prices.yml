@@ -1,0 +1,22 @@
+name: Relevé quotidien des cotes
+on:
+  schedule:
+    - cron: '41 2 * * *'
+  workflow_dispatch:
+    inputs:
+      max_bulk: { description: 'Cartes du catalogue', default: '15000' }
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm i --no-save playwright@1.48.2 && npx playwright install --with-deps chromium
+      - run: node tools/prices/run.mjs
+        env:
+          MAX_BULK: ${{ github.event.inputs.max_bulk || '15000' }}
