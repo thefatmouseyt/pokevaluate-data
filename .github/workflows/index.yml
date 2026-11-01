@@ -15,6 +15,7 @@ jobs:
         with: { python-version: "3.11" }
       - run: pip install --quiet numpy pillow requests
       - run: python tools/build_index.py
+      - run: python tools/build_fr.py
       - name: Publier
         run: |
           git config user.name "pokevaluate-bot"; git config user.email "noreply@github.com"
