@@ -4,7 +4,7 @@ on:
     - cron: '41 2 * * *'
   workflow_dispatch:
     inputs:
-      max_bulk: { description: 'Cartes du catalogue', default: '15000' }
+      max_bulk: { description: 'Cartes du catalogue', default: '35000' }
 permissions:
   id-token: write
   contents: read
@@ -19,4 +19,4 @@ jobs:
       - run: npm i --no-save playwright@1.48.2 && npx playwright install --with-deps chromium
       - run: node tools/prices/run.mjs
         env:
-          MAX_BULK: ${{ github.event.inputs.max_bulk || '15000' }}
+          MAX_BULK: ${{ github.event.inputs.max_bulk || '35000' }}
