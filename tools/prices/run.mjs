@@ -6,7 +6,7 @@
 // Les cotes sont enregistrées sur le serveur de l'app (Cloudflare D1), authentifiées par le jeton OIDC de GitHub.
 import { chromium } from 'playwright';
 const APP = 'https://pokevaluate.thefatmouse-yt.workers.dev';
-const MAX_TRACKED = Number(process.env.MAX_TRACKED || 3000), MAX_BULK = Number(process.env.MAX_BULK || 35000), MIN_USD = Number(process.env.MIN_USD || 2), MAX_POPULAR = Number(process.env.MAX_POPULAR || 300);
+const MAX_TRACKED = Number(process.env.MAX_TRACKED || 3000), MAX_BULK = Number(process.env.MAX_BULK || 35000), MIN_USD = Number(process.env.MIN_USD || 2), MAX_POPULAR = Number(process.env.MAX_POPULAR || 300), MAX_SEEDS = Number(process.env.MAX_SEEDS || 50);
 
 async function token() {
   const r = await fetch(`${process.env.ACTIONS_ID_TOKEN_REQUEST_URL}&audience=pokevaluate`, { headers: { Authorization: `Bearer ${process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}` } });
@@ -22,7 +22,7 @@ await p.goto(APP + '/?robot', { waitUntil: 'domcontentloaded' });
 await p.waitForFunction(() => window.__pvRobot, null, { timeout: 60000 });
 await p.waitForTimeout(3000);   // taux de change chargés
 
-const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULAR }) => {
+const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULAR, MAX_SEEDS }) => {
   const R = window.__pvRobot, log = [];
   const post = async (path, body) => {
     const r = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + await window.pvToken() }, body: JSON.stringify(body) });
@@ -50,6 +50,26 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
   // (seulement les cotes issues de ventes réelles : pas d'estimation par coefficient)
   // une seule récupération des sources par carte, puis chaque état / note est calculé sans requête supplémentaire
   const popular = await (await fetch('/api/popular?limit=' + MAX_POPULAR)).json();
+  // cartes à fort potentiel de grading (sélection de départ, en attendant les données d'usage) :
+  // pour chaque famille, les versions les plus chères du catalogue (EN et JA), ajoutées aux plus demandées
+  const SEEDS = [/^pikachu (vmax|ex|v)\b/i, /pikachu.*(munch|yokohama|poncho|grey felt|van gogh|illustration|golden|25th|special delivery|pokemon center)/i, /^pikachu\b/i,
+    /^mewtwo\b/i, /^mew (ex|vmax|v|gx)\b/i, /^mew\b/i, /^umbreon (vmax|ex|v|gx)\b/i, /^charizard (ex|vmax|v|gx)\b/i, /^rayquaza (vmax|ex|v)\b/i,
+    /^gengar (vmax|ex|v)\b/i, /^lugia (v|ex|vstar)\b/i, /^eevee\b/i, /^(sylveon|espeon|leafeon|glaceon) (vmax|ex|v)\b/i, /^giratina (v|vstar)\b/i, /^psyduck\b/i];
+  const cat0 = await R.loadCatalog(), seen = new Set(popular.map(x => x.meta.cardId + '|' + x.meta.variant));
+  const seeds = [];
+  for (const re of SEEDS) {
+    for (const lang of ['en', 'ja']) {
+      const best = cat0.entries.filter(e => e.lang === lang && re.test(e.name)).flatMap(e => e.rows.map(r => ({ e, r, usd: r.market ?? 0 })))
+        .filter(x => x.usd >= 80).sort((a, b) => b.usd - a.usd).slice(0, 2);
+      for (const { e, r } of best) {
+        const variant = R.variantOfSub(r.sub), k = `tp-${e.id}|${variant}`;
+        if (seen.has(k)) continue; seen.add(k);
+        seeds.push({ hits: 0, meta: { cardId: `tp-${e.id}`, origin: 'tcgplayer', lang: e.lang, variant, sel: { kind: 'raw', cond: 'NM' }, vintage: false, name: e.name } });
+      }
+    }
+  }
+  popular.push(...seeds.slice(0, MAX_SEEDS));
+  log.push(`cartes à fort potentiel : ${Math.min(seeds.length, MAX_SEEDS)} (${seeds.slice(0, MAX_SEEDS).map(s => s.meta.name).slice(0, 12).join(', ')}…)`);
   let pk = 0; const pcards = [];
   await pool(popular, 4, async ({ meta }) => {
     const base = await R.revalue({ ...meta, sel: { kind: 'raw', cond: 'NM' } }, 'EU');
@@ -88,6 +108,6 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
   const st = await (await fetch('/api/stats')).json();
   log.push(`base : ${st.points} relevés, ${st.cards} cartes, ${st.days} jours, ${st.tracked} cartes suivies`);
   return log;
-}, { MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULAR });
+}, { MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULAR, MAX_SEEDS });
 console.log(out.join('\n'));
 await b.close();
