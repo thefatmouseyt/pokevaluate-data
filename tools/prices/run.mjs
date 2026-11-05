@@ -97,8 +97,8 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
   }
   jobs.sort((a, b) => b.usd - a.usd);
   const todo = jobs.slice(0, MAX_BULK);
-  let buf = [], sent = 0, got = 0;
-  const flush = async () => { if (!buf.length) return; const c = buf; buf = []; const r = await post('/api/bulk', { cards: c }); if (!r.error) sent += r.n; else log.push('bulk : erreur ' + r.error); };
+  let buf = [], sent = 0, same = 0, got = 0;
+  const flush = async () => { if (!buf.length) return; const c = buf; buf = []; const r = await post('/api/bulk', { cards: c }); if (!r.error) { sent += r.n; same += r.skipped ?? 0; } else log.push('bulk : erreur ' + r.error); };
   await pool(todo, 12, async j => {
     const sel = { kind: 'raw', cond: 'NM' };
     const v = await R.revalue({ cardId: `tp-${j.e.id}`, origin: 'tcgplayer', lang: j.e.lang, variant: j.variant, sel, vintage: false }, 'EU', { ebay: false, entry: j.e });
@@ -107,7 +107,7 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
     if (buf.length >= 500) await flush();
   });
   await flush();
-  log.push(`catalogue : ${got} cotes calculées sur ${todo.length} (${jobs.length} cartes ≥ ${MIN_USD} $), ${sent} enregistrées`);
+  log.push(`catalogue : ${got} cotes calculées sur ${todo.length} (${jobs.length} cartes ≥ ${MIN_USD} $), ${sent} enregistrées, ${same} inchangées (non réécrites)`);
   // alertes de prix des comptes Premium : notifications push après le relevé
   const al = await post('/api/alerts/run', {});
   log.push(`alertes : ${al.fired ?? 0} déclenchées, ${al.pushed ?? 0} notifications envoyées${al.error ? ' (erreur ' + al.error + ')' : ''}`);
