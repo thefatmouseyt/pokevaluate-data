@@ -30,6 +30,9 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
   };
   const pool = async (items, n, fn) => { let i = 0; await Promise.all(Array.from({ length: n }, async () => { while (i < items.length) { const x = items[i++]; try { await fn(x); } catch { /* carte ignorée */ } } })); };
 
+  // répartition des cotes par niveau de fiabilité (high = fiable, medium = correcte, low = à confirmer, none = sans donnée)
+  const tally = () => ({ high: 0, medium: 0, low: 0, none: 0 });
+  const relT = tally(), relB = tally(), relG = tally();
   // 1) cartes suivies, toutes sources
   let done = 0, ok = 0;
   while (done < MAX_TRACKED) {
@@ -38,6 +41,7 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
     const cards = [], skip = [];
     await pool(r.items, 4, async it => {
       const v = await R.revalue(it.meta, 'EU').catch(() => null);
+      relT[v?.price.rel ?? 'none']++;
       if (v && v.price.value != null && v.price.rel !== 'none') { cards.push({ key: it.key, eur: Math.round(v.price.value * 100) / 100 }); ok++; } else skip.push(it.key);
     });
     done += r.items.length;
@@ -77,6 +81,7 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
     const sels = [...R.RAW.map(r => ({ kind: 'raw', cond: r.k })), ...Object.values(R.COMPANIES).flatMap(c => c.grades.map(g => ({ kind: 'graded', co: c.id, g: g.id })))];
     for (const sel of sels) {
       const v = R.priceFor(sel, base.card, meta.variant, 'EU', base.q, !!meta.vintage);
+      if (sel.kind === 'graded' && sel.co === 'PSA' && sel.g === '10') relG[v.value == null ? 'none' : v.src === 'model' ? 'none' : v.rel]++;
       if (v.value != null && v.rel !== 'none' && v.src !== 'model') { pcards.push({ key: R.historyKey(meta.cardId, meta.variant, sel), eur: Math.round(v.value * 100) / 100 }); pk++; }
     }
   });
@@ -97,6 +102,7 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
   await pool(todo, 12, async j => {
     const sel = { kind: 'raw', cond: 'NM' };
     const v = await R.revalue({ cardId: `tp-${j.e.id}`, origin: 'tcgplayer', lang: j.e.lang, variant: j.variant, sel, vintage: false }, 'EU', { ebay: false, entry: j.e });
+    relB[v?.price.rel ?? 'none']++;
     if (v && v.price.value != null) { got++; buf.push({ key: R.historyKey(`tp-${j.e.id}`, j.variant, sel), eur: Math.round(v.price.value * 100) / 100 }); }
     if (buf.length >= 500) await flush();
   });
@@ -105,6 +111,10 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
   // alertes de prix des comptes Premium : notifications push après le relevé
   const al = await post('/api/alerts/run', {});
   log.push(`alertes : ${al.fired ?? 0} déclenchées, ${al.pushed ?? 0} notifications envoyées${al.error ? ' (erreur ' + al.error + ')' : ''}`);
+  const f = o => `fiable ${o.high} · correcte ${o.medium} · à confirmer ${o.low} · sans donnée ${o.none}`;
+  log.push(`FIABILITÉ cartes suivies (brut, toutes sources) : ${f(relT)}`);
+  log.push(`FIABILITÉ catalogue (brut NM, sources gratuites) : ${f(relB)}`);
+  log.push(`FIABILITÉ PSA 10 des cartes demandées (sans donnée = pas de vente réelle) : ${f(relG)}`);
   const st = await (await fetch('/api/stats')).json();
   log.push(`base : ${st.points} relevés, ${st.cards} cartes, ${st.days} jours, ${st.tracked} cartes suivies`);
   return log;
