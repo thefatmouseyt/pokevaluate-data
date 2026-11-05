@@ -115,7 +115,9 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
   log.push(`FIABILITÉ cartes suivies (brut, toutes sources) : ${f(relT)}`);
   log.push(`FIABILITÉ catalogue (brut NM, sources gratuites) : ${f(relB)}`);
   log.push(`FIABILITÉ PSA 10 des cartes demandées (sans donnée = pas de vente réelle) : ${f(relG)}`);
-  const st = await (await fetch('/api/stats')).json();
+  const st = await (await fetch('/api/stats', { headers: { authorization: 'Bearer ' + await window.pvToken() } })).json();
+  // statistiques enregistrées sur le serveur (visibles par l'administrateur dans l'app)
+  await post('/api/robot/stats', { tracked: relT, catalog: relB, psa10: relG, points: st.points, cards: st.cards, days: st.days, nTracked: st.tracked, popular: popular.length });
   log.push(`base : ${st.points} relevés, ${st.cards} cartes, ${st.days} jours, ${st.tracked} cartes suivies`);
   return log;
 }, { MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULAR, MAX_SEEDS });
