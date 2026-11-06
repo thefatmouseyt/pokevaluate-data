@@ -28,22 +28,22 @@ for (const lang of ['fr', 'en']) for (const [dev, opts] of Object.entries(DEVICE
   try {
     await p.goto(APP, { waitUntil: 'networkidle' });
     // portfolio : cotes réelles du jour
-    await p.click(lang === 'fr' ? 'text=Portfolio' : 'text=Portfolio');
+    await p.click('nav.navbar >> text=Portfolio');
     await p.click(lang === 'fr' ? 'text=Actualiser les cotes' : 'text=Refresh prices').catch(() => {});
     await p.waitForTimeout(45000);
     await shot('2-portfolio');
-    await p.click(lang === 'fr' ? 'text=Recherche' : 'text=Search');
+    await p.click(lang === 'fr' ? 'nav.navbar >> text=Recherche' : 'nav.navbar >> text=Search');
     await shot('1-accueil');
     // fiche carte
-    await p.fill('input[type=search], input[placeholder*="Pikachu"]', lang === 'fr' ? 'Dracaufeu 4/102' : 'Charizard 4/102');
+    await p.fill('input[type=search], input[placeholder*="Pikachu"]', 'Umbreon VMAX 215/203');
     await p.waitForTimeout(6000);
     await p.locator('main button:has(img)').first().click();
     await p.waitForTimeout(12000);
     await shot('3-fiche');
-    await p.evaluate(() => window.scrollTo(0, 650)); await shot('4-fiche-courbe');
+    await p.evaluate(() => window.scrollTo(0, 420)); await shot('4-fiche-courbe');
     // rentabilité du grading
-    await p.click('text=Worth it?'); await p.waitForTimeout(5000); await shot('5-worth-it');
-    await p.click(lang === 'fr' ? 'text=Pré-grader' : 'text=Pre-grader'); await shot('6-pre-grader');
+    await p.click('nav.navbar >> text=Worth it?'); await p.waitForTimeout(5000); await shot('5-worth-it');
+    await p.click(lang === 'fr' ? 'nav.navbar >> text=Pré-grader' : 'nav.navbar >> text=Pre-grader'); await p.waitForTimeout(3000); await shot('6-pre-grader');
   } catch (e) { console.log('erreur', lang, dev, e.message); await p.screenshot({ path: `shots/${lang}-${dev}-erreur.png` }); }
   await ctx.close();
 }
