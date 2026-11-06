@@ -1,0 +1,7 @@
+name: check
+on: workflow_dispatch
+jobs:
+  c:
+    runs-on: ubuntu-latest
+    steps:
+      - run: curl -sSI https://getgradewise.app/gradewise-test.apk | head -8; curl -s -o /dev/null -w '%{http_code} %{size_download}\n' https://getgradewise.app/gradewise-test.apk; curl -s -o /dev/null -w 'home %{http_code}\n' https://getgradewise.app/
