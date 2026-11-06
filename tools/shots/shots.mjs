@@ -4,11 +4,11 @@ import fs from 'fs';
 const APP = 'https://getgradewise.app';
 const D = 864e5, now = Date.now();
 const demo = [
-  { cardId: 'base1-4', name: 'Charizard', setName: 'Base Set', localId: '4', variant: 'holo', buy: 380, image: 'https://assets.tcgdex.net/en/base/base1/4/high.webp', vintage: true },
-  { cardId: 'swsh7-215', name: 'Umbreon VMAX', setName: 'Evolving Skies', localId: '215', variant: 'holo', buy: 1300, image: 'https://assets.tcgdex.net/en/swsh/swsh7/215/high.webp' },
-  { cardId: 'neo1-9', name: 'Lugia', setName: 'Neo Genesis', localId: '9', variant: 'holo', buy: 260, image: 'https://assets.tcgdex.net/en/neo/neo1/9/high.webp', vintage: true },
-  { cardId: 'sv03.5-199', name: 'Charizard ex', setName: '151', localId: '199', variant: 'holo', buy: 210, image: 'https://assets.tcgdex.net/en/sv/sv03.5/199/high.webp' },
-  { cardId: 'swsh12pt5gg-GG70', name: 'Giratina VSTAR', setName: 'Crown Zenith', localId: 'GG70', variant: 'holo', buy: 150, image: 'https://assets.tcgdex.net/en/swsh/swsh12.5/GG70/high.webp' }
+  { cardId: 'base1-4', name: 'Charizard', setName: 'Base Set', localId: '4', variant: 'holo', buy: 380, image: 'https://assets.tcgdex.net/en/base/base1/4', vintage: true },
+  { cardId: 'swsh7-215', name: 'Umbreon VMAX', setName: 'Evolving Skies', localId: '215', variant: 'holo', buy: 1300, image: 'https://assets.tcgdex.net/en/swsh/swsh7/215' },
+  { cardId: 'neo1-9', name: 'Lugia', setName: 'Neo Genesis', localId: '9', variant: 'holo', buy: 260, image: 'https://assets.tcgdex.net/en/neo/neo1/9', vintage: true },
+  { cardId: 'sv03.5-199', name: 'Charizard ex', setName: '151', localId: '199', variant: 'holo', buy: 210, image: 'https://assets.tcgdex.net/en/sv/sv03.5/199' },
+  { cardId: 'swsh12pt5gg-GG70', name: 'Giratina VSTAR', setName: 'Crown Zenith', localId: 'GG70', variant: 'holo', buy: 150, image: 'https://assets.tcgdex.net/en/swsh/swsh12.5/GG70' }
 ].map((c, i) => ({ ...c, id: 'demo' + i, origin: 'tcgdex', lang: 'en', sel: { kind: 'raw', cond: 'NM' }, vintage: !!c.vintage, qty: 1, value: null, src: null, addedAt: now - (40 - i * 5) * D, updatedAt: now - 2 * D }));
 const DEVICES = { iphone69: { viewport: { width: 440, height: 956 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true }, android: { viewport: { width: 360, height: 800 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true } };
 fs.mkdirSync('shots', { recursive: true });
