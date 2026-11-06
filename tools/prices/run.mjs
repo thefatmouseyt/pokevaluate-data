@@ -2,11 +2,12 @@
 // Ouvre l'app en mode robot : le calcul des cotes est exactement celui de l'app (croisement des sources).
 // 1) cartes suivies (consultées par les utilisateurs ou au portfolio) : toutes les sources, ventes eBay comprises
 // 1 bis) cartes les plus demandées : états bruts + notes gradées de toutes les sociétés
-// 2) catalogue complet (cartes cotées ≥ MIN_USD) : sources gratuites (Cardmarket via TCGdex + TCGplayer)
+// 1 ter) PokeTrace Pro : ventes eBay brut + gradé de tout le catalogue, par lot de 20 cartes
+// 2) catalogue complet (cartes cotées ≥ MIN_USD) : Cardmarket via TCGdex + TCGplayer + ventes eBay PokeTrace
 // Les cotes sont enregistrées sur le serveur de l'app (Cloudflare D1), authentifiées par le jeton OIDC de GitHub.
 import { chromium } from 'playwright';
 const APP = 'https://pokevaluate.thefatmouse-yt.workers.dev';
-const MAX_TRACKED = Number(process.env.MAX_TRACKED || 3000), MAX_BULK = Number(process.env.MAX_BULK || 35000), MIN_USD = Number(process.env.MIN_USD || 0.01), MAX_POPULAR = Number(process.env.MAX_POPULAR || 300), MAX_SEEDS = Number(process.env.MAX_SEEDS || 50);
+const MAX_TRACKED = Number(process.env.MAX_TRACKED || 3000), MAX_BULK = Number(process.env.MAX_BULK || 35000), MIN_USD = Number(process.env.MIN_USD || 0.01), MAX_POPULAR = Number(process.env.MAX_POPULAR || 300), MAX_SEEDS = Number(process.env.MAX_SEEDS || 50), MAX_PT = Number(process.env.MAX_PT || 7000);
 
 async function token() {
   const r = await fetch(`${process.env.ACTIONS_ID_TOKEN_REQUEST_URL}&audience=pokevaluate`, { headers: { Authorization: `Bearer ${process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}` } });
@@ -22,7 +23,7 @@ await p.goto(APP + '/?robot', { waitUntil: 'domcontentloaded' });
 await p.waitForFunction(() => window.__pvRobot, null, { timeout: 60000 });
 await p.waitForTimeout(3000);   // taux de change chargés
 
-const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULAR, MAX_SEEDS }) => {
+const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULAR, MAX_SEEDS, MAX_PT }) => {
   const R = window.__pvRobot, log = [];
   const post = async (path, body) => {
     const r = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + await window.pvToken() }, body: JSON.stringify(body) });
@@ -122,7 +123,35 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
   for (let i = 0; i < pcards.length; i += 900) await post('/api/bulk', { cards: pcards.slice(i, i + 900) });
   log.push(`cartes les plus demandées : ${popular.length} cartes, ${pk} cotes (états bruts + notes gradées)`);
 
-  // 2) catalogue, sources gratuites, cartes les plus chères d'abord
+  // 1 ter) PokeTrace Pro : liste paginée de toutes les cartes (20 par requête) avec leurs ventes eBay (brut + gradé)
+  // rattachées au catalogue par l'identifiant TCGplayer (correspondance exacte, sans recherche par nom)
+  // plafond côté serveur : 8 000 requêtes robot / jour (sur 10 000), cadence ≤ 3 requêtes / s (limite Pro : 30 / 10 s)
+  const ptq = new Map(); let ptReq = 0, ptCards = 0, ptStop = '', ptErr = 0;
+  for (const game of MAX_PT > 0 ? ['pokemon', 'pokemon-japanese'] : []) {
+    let cursor = '';
+    while (ptReq < MAX_PT) {
+      const t0 = Date.now();
+      const r = await fetch('/api/robot/pt?' + new URLSearchParams({ market: 'US', limit: '20', game, ...(cursor ? { cursor } : {}) }), { headers: { authorization: 'Bearer ' + await window.pvToken() } });
+      ptReq++;
+      if (r.status === 429) { const j = await r.json().catch(() => ({})); if (j.error === 'cap') { ptStop = 'plafond quotidien'; break; } await new Promise(ok => setTimeout(ok, 5000)); continue; }
+      if (!r.ok) { ptStop = 'erreur ' + r.status; if (++ptErr >= 5) break; await new Promise(ok => setTimeout(ok, 3000)); continue; }
+      ptErr = 0;
+      const j = await r.json();
+      for (const c of j.data ?? []) {
+        const tid = c.refs?.tcgplayerId; if (!tid) continue;
+        const q = R.toQuote(c);
+        if (!Object.keys(q.raw ?? {}).length && !Object.keys(q.grades ?? {}).length) continue;
+        ptq.set(`${tid}|${R.variantOfSub(c.variant ?? null)}`, q); ptCards++;
+      }
+      if (!j.pagination?.hasMore || !j.pagination?.nextCursor) break;
+      cursor = j.pagination.nextCursor;
+      const wait = 350 - (Date.now() - t0); if (wait > 0) await new Promise(ok => setTimeout(ok, wait));
+    }
+    if (ptStop === 'plafond quotidien') break;
+  }
+  log.push(`PokeTrace Pro : ${ptReq} requêtes, ${ptCards} cartes avec ventes eBay${ptStop ? ' (arrêt : ' + ptStop + ')' : ''}`);
+
+  // 2) catalogue, cartes les plus chères d'abord : sources gratuites + ventes eBay PokeTrace quand la carte y figure
   const cat = await R.loadCatalog();
   const jobs = [];
   for (const e of cat.entries) for (const row of e.rows) {
@@ -131,16 +160,32 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
   }
   jobs.sort((a, b) => b.usd - a.usd);
   const todo = jobs.slice(0, MAX_BULK);
-  let buf = [], sent = 0, same = 0, got = 0;
+  let buf = [], sent = 0, same = 0, got = 0, withEbay = 0; const gbuf = [], relC = tally();
   const flush = async () => { if (!buf.length) return; const c = buf; buf = []; const r = await post('/api/bulk', { cards: c }); if (!r.error) { sent += r.n; same += r.skipped ?? 0; } else log.push('bulk : erreur ' + r.error); };
   await pool(todo, 12, async j => {
     const sel = { kind: 'raw', cond: 'NM' };
-    const v = await R.revalue({ cardId: `tp-${j.e.id}`, origin: 'tcgplayer', lang: j.e.lang, variant: j.variant, sel, vintage: false }, 'EU', { ebay: false, entry: j.e });
+    const pq = ptq.get(`${j.e.id}|${j.variant}`) ?? null;
+    const v = await R.revalue({ cardId: `tp-${j.e.id}`, origin: 'tcgplayer', lang: j.e.lang, variant: j.variant, sel, vintage: false }, 'EU', { ebay: false, entry: j.e, ...(pq ? { q: pq } : {}) });
     relB[v?.price.rel ?? 'none']++;
+    if (pq) withEbay++;
     if (v && v.price.value != null) { got++; buf.push({ key: R.historyKey(`tp-${j.e.id}`, j.variant, sel), eur: Math.round(v.price.value * 100) / 100 }); }
+    // autres états bruts et notes gradées : uniquement les cotes issues de ventes réelles (pas d'estimation par coefficient)
+    if (v && pq) {
+      for (const s2 of [...R.RAW.filter(r => r.k !== 'NM').map(r => ({ kind: 'raw', cond: r.k })), ...Object.values(R.COMPANIES).flatMap(c => c.grades.map(g => ({ kind: 'graded', co: c.id, g: g.id })))]) {
+        const w = R.priceFor(s2, v.card, j.variant, 'EU', pq, false);
+        if (s2.kind === 'graded' && s2.co === 'PSA' && s2.g === '10') relC[w.value == null || w.src === 'model' ? 'none' : w.rel]++;
+        if (w.value != null && w.rel !== 'none' && w.src !== 'model') gbuf.push({ key: R.historyKey(`tp-${j.e.id}`, j.variant, s2), eur: Math.round(w.value * 100) / 100 });
+      }
+    }
     if (buf.length >= 500) await flush();
   });
   await flush();
+  // notes gradées et autres états, après les cotes brutes NM (prioritaires si le plafond d'écriture est atteint)
+  let gsent = 0, gskip = 0;
+  for (let i = 0; i < gbuf.length; i += 900) { const r = await post('/api/bulk', { cards: gbuf.slice(i, i + 900) }); if (r.error) { log.push('bulk gradé : erreur ' + r.error); break; } gsent += r.n; gskip += r.skipped ?? 0; if (r.ok === false) break; }
+  log.push(`catalogue gradé + états : ${gbuf.length} cotes issues de ventes réelles, ${gsent} enregistrées, ${gbuf.length - gsent} non enregistrées (plafond)`);
+  log.push(`FIABILITÉ PSA 10 du catalogue (ventes PokeTrace) : fiable ${relC.high} · correcte ${relC.medium} · à confirmer ${relC.low} · sans donnée ${relC.none}`);
+  log.push(`catalogue : ${withEbay} cartes avec ventes eBay PokeTrace`);
   log.push(`catalogue : ${got} cotes calculées sur ${todo.length} (${jobs.length} cartes ≥ ${MIN_USD} $), ${sent} enregistrées, ${same} refusées (plafond quotidien de sécurité)`);
   // alertes de prix des comptes Premium : notifications push après le relevé
   const al = await post('/api/alerts/run', {});
@@ -154,6 +199,6 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
   await post('/api/robot/stats', { tracked: relT, catalog: relB, psa10: relG, points: st.points, cards: st.cards, days: st.days, nTracked: st.tracked, popular: popular.length });
   log.push(`base : ${st.points} relevés, ${st.cards} cartes, ${st.days} jours, ${st.tracked} cartes suivies`);
   return log;
-}, { MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULAR, MAX_SEEDS });
+}, { MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULAR, MAX_SEEDS, MAX_PT });
 console.log(out.join('\n'));
 await b.close();
