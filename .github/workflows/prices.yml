@@ -19,4 +19,4 @@ jobs:
       - run: npm i --no-save playwright@1.48.2 && npx playwright install --with-deps chromium
       - run: node tools/prices/run.mjs
         env:
-          MAX_BULK: ${{ github.event.inputs.max_bulk || '35000' }}
+          MAX_BULK: ${{ github.event.inputs.max_bulk || '150000' }}
