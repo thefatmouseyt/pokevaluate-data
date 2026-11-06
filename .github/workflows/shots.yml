@@ -1,0 +1,16 @@
+name: Captures stores
+on: workflow_dispatch
+permissions: { contents: write }
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm i --no-save playwright@1.48.2 && npx playwright install --with-deps chromium
+      - run: node tools/shots/shots.mjs
+      - run: |
+          git config user.name github-actions; git config user.email github-actions@github.com
+          git add shots && git commit -m "Captures stores" && git push
