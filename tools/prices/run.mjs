@@ -30,6 +30,39 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
   };
   const pool = async (items, n, fn) => { let i = 0; await Promise.all(Array.from({ length: n }, async () => { while (i < items.length) { const x = items[i++]; try { await fn(x); } catch { /* carte ignorée */ } } })); };
 
+  // 0) cotes signalées : avis demandé par l'administrateur (ventes eBay comprises) + corrections manuelles à intégrer
+  try {
+    const sp = await (await fetch('/api/robot/support', { headers: { authorization: 'Bearer ' + await window.pvToken() } })).json();
+    const seen = new Set();
+    for (const r of sp.ask ?? []) {
+      if (seen.has(r.card_key)) continue; seen.add(r.card_key);
+      const reps = sp.ask.filter(x => x.card_key === r.card_key);
+      const shown = reps[0].data.shown, props = reps.map(x => x.data.proposed).filter(x => x > 0);
+      const prop = props.length ? props.sort((a, b) => a - b)[props.length >> 1] : null;
+      let avis;
+      try {
+        const meta = JSON.parse(r.data.card?.meta || 'null');
+        const v = meta && await R.revalue(meta, 'EU', { ebay: true, match: true });
+        const val = v?.price.value, nm = v?.q?.raw?.NM;
+        const eurUsd = x => Math.round(x / 1.16);
+        const facts = [
+          val != null ? `Cote recalculée avec toutes les sources : ${Math.round(val)} € (fiabilité ${{ high: 'fiable', medium: 'correcte', low: 'à confirmer', none: 'aucune' }[v.price.rel]}).` : 'Cote impossible à recalculer.',
+          nm ? `Ventes eBay brutes NM : ${nm.count ?? '?'} ventes, médiane ≈ ${eurUsd(nm.usd)} €.` : 'Aucune vente eBay brute trouvée.',
+          `Affichée au signalement : ${shown ?? '—'} € · proposée : ${prop ?? '—'} €.`
+        ];
+        const near = (a, b) => a > 0 && b > 0 && Math.abs(a / b - 1) <= 0.2;
+        const verdict = val == null ? 'Données insuffisantes : vérifie à la main sur eBay.'
+          : near(prop, val) && !near(shown, val) ? `Le signalement semble juste → corrige la cote à environ ${Math.round(val)} €.`
+          : near(shown, val) ? 'La cote affichée est cohérente avec les ventes → signalement probablement infondé (« La cote est juste »).'
+          : `Écart important entre les sources → vérifie à la main ; la cote recalculée aujourd'hui est ${Math.round(val)} €.`;
+        avis = facts.join(' ') + '\nVerdict : ' + verdict;
+      } catch { avis = 'Vérification automatique impossible pour cette carte : vérifie à la main sur eBay.'; }
+      await post('/api/robot/support', { card_key: r.card_key, avis });
+    }
+    log.push(`signalements : ${seen.size} avis rendus`);
+    for (const f of sp.fixes ?? []) log.push(`CORRECTION MANUELLE À INTÉGRER : ${f.card?.name ?? f.card_key} ${f.card?.number ?? ''} (${f.card?.lang ?? ''}, ${f.card?.sel ?? ''}) → ${f.eur} € · ${f.note || 'sans note'} · ${new Date(f.ts).toISOString().slice(0, 10)}`);
+  } catch (e) { log.push('signalements : erreur ' + e.message); }
+
   // répartition des cotes par niveau de fiabilité (high = fiable, medium = correcte, low = à confirmer, none = sans donnée)
   const tally = () => ({ high: 0, medium: 0, low: 0, none: 0 });
   const relT = tally(), relB = tally(), relG = tally();
