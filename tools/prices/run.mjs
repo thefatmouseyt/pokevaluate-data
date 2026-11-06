@@ -161,8 +161,8 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
   }
   jobs.sort((a, b) => b.usd - a.usd);
   const todo = jobs.slice(0, MAX_BULK);
-  let buf = [], sent = 0, same = 0, got = 0, withEbay = 0; const gbuf = [], relC = tally(), hcand = [];
-  const flush = async () => { if (!buf.length) return; const c = buf; buf = []; const r = await post('/api/bulk', { cards: c }); if (!r.error) { sent += r.n; same += r.skipped ?? 0; } else log.push('bulk : erreur ' + r.error); };
+  let buf = [], sent = 0, same = 0, unch = 0, got = 0, withEbay = 0; const gbuf = [], relC = tally(), hcand = [];
+  const flush = async () => { if (!buf.length) return; const c = buf; buf = []; const r = await post('/api/bulk', { cards: c }); if (!r.error) { sent += r.n; same += r.skipped ?? 0; unch += r.same ?? 0; } else log.push('bulk : erreur ' + r.error); };
   await pool(todo, 12, async j => {
     const sel = { kind: 'raw', cond: 'NM' };
     const pq = ptq.get(`${j.e.id}|${j.variant}`) ?? null;
@@ -184,15 +184,15 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
   });
   await flush();
   // notes gradées et autres états, après les cotes brutes NM (prioritaires si le plafond d'écriture est atteint)
-  let gsent = 0, gskip = 0;
-  for (let i = 0; i < gbuf.length; i += 900) { const r = await post('/api/bulk', { cards: gbuf.slice(i, i + 900) }); if (r.error) { log.push('bulk gradé : erreur ' + r.error); break; } gsent += r.n; gskip += r.skipped ?? 0; if (r.ok === false) break; }
-  log.push(`catalogue gradé + états : ${gbuf.length} cotes issues de ventes réelles, ${gsent} enregistrées, ${gbuf.length - gsent} non enregistrées (plafond)`);
+  let gsent = 0, gskip = 0, gsame = 0;
+  for (let i = 0; i < gbuf.length; i += 900) { const r = await post('/api/bulk', { cards: gbuf.slice(i, i + 900) }); if (r.error) { log.push('bulk gradé : erreur ' + r.error); break; } gsent += r.n; gskip += r.skipped ?? 0; gsame += r.same ?? 0; if (r.ok === false) break; }
+  log.push(`catalogue gradé + états : ${gbuf.length} cotes issues de ventes réelles, ${gsent} enregistrées, ${gsame} inchangées (non réenregistrées), ${gskip} refusées (plafond)`);
   log.push(`FIABILITÉ PSA 10 du catalogue (ventes PokeTrace) : fiable ${relC.high} · correcte ${relC.medium} · à confirmer ${relC.low} · sans donnée ${relC.none}`);
   log.push(`catalogue : ${withEbay} cartes avec ventes eBay PokeTrace`);
-  log.push(`catalogue : ${got} cotes calculées sur ${todo.length} (${jobs.length} cartes ≥ ${MIN_USD} $), ${sent} enregistrées, ${same} refusées (plafond quotidien de sécurité)`);
+  log.push(`catalogue : ${got} cotes calculées sur ${todo.length} (${jobs.length} cartes ≥ ${MIN_USD} $), ${sent} enregistrées, ${unch} inchangées (non réenregistrées), ${same} refusées (plafond quotidien de sécurité)`);
   // 3) historique passé (PokeTrace Pro, 1 an) : avec les requêtes restantes du jour, cartes les plus chères d'abord,
   // une seule fois par cote. Points reconstruits : cote du jour × (valeur du jour passé / valeur la plus récente) de la même source,
-  // écarts hors [0,4 ; 2,5] écartés ; quotidien sur 30 jours, hebdomadaire au-delà ; jours déjà relevés jamais remplacés.
+  // écarts hors [0,4 ; 2,5] écartés ; quotidien sur 30 jours, le lundi au-delà ; jours déjà relevés jamais remplacés.
   let hReq = 0, hSeries = 0, hPts = 0, hStop = '';
   try {
     const done = new Set(await (await fetch('/api/robot/backfill', { headers: { authorization: 'Bearer ' + await window.pvToken() } })).json());
@@ -217,7 +217,7 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
           const ratio = v / ref; if (ratio < 0.4 || ratio > 2.5) continue;
           const eur = Math.round(c.eur * ratio * 100) / 100;
           if (day >= recent) pts.push([day, eur]);
-          else { const dt = new Date(day + 'T00:00:00Z'), wk = Math.floor((dt.getTime() / 864e5 + 3) / 7); byWeek.set(wk, [day, eur]); }
+          else if (new Date(day + 'T00:00:00Z').getUTCDay() === 1) byWeek.set(day, [day, eur]);   // au-delà de 30 jours : le lundi (point conservé à long terme)
         }
         pts.push(...byWeek.values());
         if (pts.length) { pending.push({ key: c.key, pts }); hSeries++; }
