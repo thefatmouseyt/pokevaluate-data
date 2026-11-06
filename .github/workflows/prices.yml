@@ -4,7 +4,7 @@ on:
     - cron: '41 2 * * *'
   workflow_dispatch:
     inputs:
-      max_bulk: { description: 'Cartes du catalogue', default: '35000' }
+      max_bulk: { description: 'Cartes du catalogue', default: '150000' }
 permissions:
   id-token: write
   contents: read
