@@ -4,6 +4,7 @@
 // 1 bis) cartes les plus demandées : états bruts + notes gradées de toutes les sociétés
 // 1 ter) PokeTrace Pro : ventes eBay brut + gradé de tout le catalogue, par lot de 20 cartes
 // 2) catalogue complet (cartes cotées ≥ MIN_USD) : Cardmarket via TCGdex + TCGplayer + ventes eBay PokeTrace
+// 3) historique passé sur 1 an (PokeTrace Pro), avec les requêtes restantes, une fois par cote
 // Les cotes sont enregistrées sur le serveur de l'app (Cloudflare D1), authentifiées par le jeton OIDC de GitHub.
 import { chromium } from 'playwright';
 const APP = 'https://pokevaluate.thefatmouse-yt.workers.dev';
@@ -160,7 +161,7 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
   }
   jobs.sort((a, b) => b.usd - a.usd);
   const todo = jobs.slice(0, MAX_BULK);
-  let buf = [], sent = 0, same = 0, got = 0, withEbay = 0; const gbuf = [], relC = tally();
+  let buf = [], sent = 0, same = 0, got = 0, withEbay = 0; const gbuf = [], relC = tally(), hcand = [];
   const flush = async () => { if (!buf.length) return; const c = buf; buf = []; const r = await post('/api/bulk', { cards: c }); if (!r.error) { sent += r.n; same += r.skipped ?? 0; } else log.push('bulk : erreur ' + r.error); };
   await pool(todo, 12, async j => {
     const sel = { kind: 'raw', cond: 'NM' };
@@ -169,12 +170,14 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
     relB[v?.price.rel ?? 'none']++;
     if (pq) withEbay++;
     if (v && v.price.value != null) { got++; buf.push({ key: R.historyKey(`tp-${j.e.id}`, j.variant, sel), eur: Math.round(v.price.value * 100) / 100 }); }
+    if (v && pq?.id && v.price.value != null) hcand.push({ usd: j.usd, ptId: pq.id, tier: 'NEAR_MINT', key: R.historyKey(`tp-${j.e.id}`, j.variant, sel), eur: v.price.value });
     // autres états bruts et notes gradées : uniquement les cotes issues de ventes réelles (pas d'estimation par coefficient)
     if (v && pq) {
       for (const s2 of [...R.RAW.filter(r => r.k !== 'NM').map(r => ({ kind: 'raw', cond: r.k })), ...Object.values(R.COMPANIES).flatMap(c => c.grades.map(g => ({ kind: 'graded', co: c.id, g: g.id })))]) {
         const w = R.priceFor(s2, v.card, j.variant, 'EU', pq, false);
         if (s2.kind === 'graded' && s2.co === 'PSA' && s2.g === '10') relC[w.value == null || w.src === 'model' ? 'none' : w.rel]++;
         if (w.value != null && w.rel !== 'none' && w.src !== 'model') gbuf.push({ key: R.historyKey(`tp-${j.e.id}`, j.variant, s2), eur: Math.round(w.value * 100) / 100 });
+        if (s2.kind === 'graded' && s2.co === 'PSA' && s2.g === '10' && w.value != null && w.src !== 'model' && pq.id && pq.grades?.PSA_10) hcand.push({ usd: j.usd * 3, ptId: pq.id, tier: 'PSA_10', key: R.historyKey(`tp-${j.e.id}`, j.variant, s2), eur: w.value });
       }
     }
     if (buf.length >= 500) await flush();
@@ -187,6 +190,45 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
   log.push(`FIABILITÉ PSA 10 du catalogue (ventes PokeTrace) : fiable ${relC.high} · correcte ${relC.medium} · à confirmer ${relC.low} · sans donnée ${relC.none}`);
   log.push(`catalogue : ${withEbay} cartes avec ventes eBay PokeTrace`);
   log.push(`catalogue : ${got} cotes calculées sur ${todo.length} (${jobs.length} cartes ≥ ${MIN_USD} $), ${sent} enregistrées, ${same} refusées (plafond quotidien de sécurité)`);
+  // 3) historique passé (PokeTrace Pro, 1 an) : avec les requêtes restantes du jour, cartes les plus chères d'abord,
+  // une seule fois par cote. Points reconstruits : cote du jour × (valeur du jour passé / valeur la plus récente) de la même source,
+  // écarts hors [0,4 ; 2,5] écartés ; quotidien sur 30 jours, hebdomadaire au-delà ; jours déjà relevés jamais remplacés.
+  let hReq = 0, hSeries = 0, hPts = 0, hStop = '';
+  try {
+    const done = new Set(await (await fetch('/api/robot/backfill', { headers: { authorization: 'Bearer ' + await window.pvToken() } })).json());
+    const cutoff = new Date(Date.now() - 8 * 864e5).toISOString().slice(0, 10), recent = new Date(Date.now() - 38 * 864e5).toISOString().slice(0, 10);
+    const todo = hcand.filter(c => !done.has(c.key)).sort((a, b) => b.usd - a.usd);
+    let pending = [];
+    const send = async () => { if (!pending.length) return true; const r = await post('/api/robot/backfill', { series: pending }); pending = []; if (r.error || r.ok === false) { hStop = 'écriture : ' + (r.error ?? 'plafond'); return false; } hPts += r.n; return true; };
+    for (const c of todo) {
+      const t0 = Date.now();
+      const r = await fetch('/api/robot/pt?' + new URLSearchParams({ path: `/cards/${c.ptId}/prices/${c.tier}/history`, period: '1y', limit: '365' }), { headers: { authorization: 'Bearer ' + await window.pvToken() } });
+      hReq++;
+      if (r.status === 429) { hStop = 'plafond de requêtes'; break; }
+      if (!r.ok) { if (hReq > 30 && hSeries === 0) { hStop = 'erreur ' + r.status; break; } continue; }
+      const rows = (await r.json()).data ?? [];
+      const val = x => x.median7d ?? x.avg ?? null;
+      const src = rows.some(x => x.source === 'ebay' && val(x) > 0) ? 'ebay' : rows.some(x => x.source === 'tcgplayer' && val(x) > 0) ? 'tcgplayer' : null;
+      const rs = rows.filter(x => x.source === src && val(x) > 0 && /^\d{4}-\d{2}-\d{2}/.test(x.date)).map(x => [x.date.slice(0, 10), val(x)]).sort((a, b) => a[0] < b[0] ? -1 : 1);
+      if (rs.length >= 2) {
+        const ref = rs[rs.length - 1][1], byWeek = new Map(), pts = [];
+        for (const [day, v] of rs) {
+          if (day >= cutoff) continue;
+          const ratio = v / ref; if (ratio < 0.4 || ratio > 2.5) continue;
+          const eur = Math.round(c.eur * ratio * 100) / 100;
+          if (day >= recent) pts.push([day, eur]);
+          else { const dt = new Date(day + 'T00:00:00Z'), wk = Math.floor((dt.getTime() / 864e5 + 3) / 7); byWeek.set(wk, [day, eur]); }
+        }
+        pts.push(...byWeek.values());
+        if (pts.length) { pending.push({ key: c.key, pts }); hSeries++; }
+      }
+      if (pending.length >= 20 && !(await send())) break;
+      const wait = 350 - (Date.now() - t0); if (wait > 0) await new Promise(ok => setTimeout(ok, wait));
+    }
+    await send();
+    log.push(`historique 1 an : ${hReq} requêtes, ${hSeries} cotes complétées, ${hPts} points passés enregistrés, ${todo.length - hReq} cotes restantes pour les nuits suivantes${hStop ? ' (arrêt : ' + hStop + ')' : ''}`);
+  } catch (e) { log.push('historique : erreur ' + e.message); }
+
   // alertes de prix des comptes Premium : notifications push après le relevé
   const al = await post('/api/alerts/run', {});
   log.push(`alertes : ${al.fired ?? 0} déclenchées, ${al.pushed ?? 0} notifications envoyées${al.error ? ' (erreur ' + al.error + ')' : ''}`);
