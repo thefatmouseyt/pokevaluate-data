@@ -141,7 +141,7 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
     if (buf.length >= 500) await flush();
   });
   await flush();
-  log.push(`catalogue : ${got} cotes calculées sur ${todo.length} (${jobs.length} cartes ≥ ${MIN_USD} $), ${sent} enregistrées, ${same} inchangées (non réécrites)`);
+  log.push(`catalogue : ${got} cotes calculées sur ${todo.length} (${jobs.length} cartes ≥ ${MIN_USD} $), ${sent} enregistrées, ${same} refusées (plafond quotidien de sécurité)`);
   // alertes de prix des comptes Premium : notifications push après le relevé
   const al = await post('/api/alerts/run', {});
   log.push(`alertes : ${al.fired ?? 0} déclenchées, ${al.pushed ?? 0} notifications envoyées${al.error ? ' (erreur ' + al.error + ')' : ''}`);
