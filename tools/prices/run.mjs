@@ -133,10 +133,10 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
     const base = await R.revalue({ ...meta, sel: { kind: 'raw', cond: 'NM' } }, 'EU');
     if (!base) return;
     // notes gradées affinées par le détail des ventes (même calcul que la fiche carte)
-    if (base.ptId && base.q) base.q = await R.refineGraded(base.ptId, base.q, Object.keys(base.q.grades ?? {})).catch(() => base.q);
+    if (base.ptId && base.q) base.q = await R.refineAll(base.ptId, base.q).catch(() => base.q);
     const sels = [...R.RAW.map(r => ({ kind: 'raw', cond: r.k })), ...Object.values(R.COMPANIES).flatMap(c => c.grades.map(g => ({ kind: 'graded', co: c.id, g: g.id })))];
     for (const sel of sels) {
-      const v = R.priceFor(sel, base.card, meta.variant, 'EU', base.q, !!meta.vintage);
+      const v = R.priceOf(sel, base.card, meta.variant, 'EU', base.q, !!meta.vintage);
       if (sel.kind === 'graded' && sel.co === 'PSA' && sel.g === '10') relG[v.value == null ? 'none' : v.src === 'model' ? 'none' : v.rel]++;
       if (v.value != null && v.rel !== 'none' && v.src !== 'model') { pcards.push({ key: R.historyKey(meta.cardId, meta.variant, sel), eur: Math.round(v.value * 100) / 100 }); pk++; }
     }
@@ -190,17 +190,19 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
     relB[v?.price.rel ?? 'none']++;
     if (pq) withEbay++;
     if (v && v.price.value != null) { got++; buf.push({ key: R.historyKey(`tp-${j.e.id}`, j.variant, sel), eur: Math.round(v.price.value * 100) / 100 }); }
-    if (v && pq?.id && v.price.value != null && (pq.raw?.NM?.usd ?? 0) >= 200) rcand.push({ raw: true, key: R.historyKey(`tp-${j.e.id}`, j.variant, sel), card: v.card, variant: j.variant, s2: sel, pq, gk: 'NEAR_MINT', usd: pq.raw.NM.usd });
+    // carte à affiner (brut NM ou note gradée ≥ 200 $) : toutes ses cotes seront recalculées avec le relevé affiné
+    const rk = v && pq?.id ? R.REFINE_KEYS.filter(k => ((k === 'NEAR_MINT' ? pq.raw?.NM : pq.grades?.[k])?.usd ?? 0) >= 200) : [];
+    const rc = rk.length ? { card: v.card, variant: j.variant, pq, keys: rk, usd: Math.max(...rk.map(k => (k === 'NEAR_MINT' ? pq.raw.NM : pq.grades[k]).usd)), nmKey: R.historyKey(`tp-${j.e.id}`, j.variant, sel), idx: [] } : null;
+    if (rc) rcand.push(rc);
     if (v && pq?.id && v.price.value != null) hcand.push({ usd: j.usd, ptId: pq.id, tier: 'NEAR_MINT', key: R.historyKey(`tp-${j.e.id}`, j.variant, sel), eur: v.price.value });
     // autres états bruts et notes gradées : uniquement les cotes issues de ventes réelles (pas d'estimation par coefficient)
     if (v && pq) {
       for (const s2 of [...R.RAW.filter(r => r.k !== 'NM').map(r => ({ kind: 'raw', cond: r.k })), ...Object.values(R.COMPANIES).flatMap(c => c.grades.map(g => ({ kind: 'graded', co: c.id, g: g.id })))]) {
-        const w = R.priceFor(s2, v.card, j.variant, 'EU', pq, false);
+        const w = R.priceOf(s2, v.card, j.variant, 'EU', pq, false);
         if (s2.kind === 'graded' && s2.co === 'PSA' && s2.g === '10') relC[w.value == null || w.src === 'model' ? 'none' : w.rel]++;
         if (w.value != null && w.rel !== 'none' && w.src !== 'model') {
           gbuf.push({ key: R.historyKey(`tp-${j.e.id}`, j.variant, s2), eur: Math.round(w.value * 100) / 100 });
-          const gk = s2.kind === 'graded' && pq.id ? R.gradeKeys(s2.co, s2.g).find(k => pq.grades?.[k]) : null;
-          if (gk && pq.grades[gk].usd >= 200 && w.src === 'ebay') rcand.push({ i: gbuf.length - 1, card: v.card, variant: j.variant, s2, pq, gk, usd: pq.grades[gk].usd });
+          if (rc) rc.idx.push([gbuf.length - 1, s2]);
         }
         if (s2.kind === 'graded' && s2.co === 'PSA' && s2.g === '10' && w.value != null && w.src !== 'model' && pq.id && pq.grades?.PSA_10) hcand.push({ usd: j.usd * 3, ptId: pq.id, tier: 'PSA_10', key: R.historyKey(`tp-${j.e.id}`, j.variant, s2), eur: w.value });
       }
@@ -211,30 +213,32 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
   // 2 bis) cotes affinées par le détail des ventes (brut NM et notes gradées) (volume, fraîcheur, ventes isolées atténuées), les plus chères d'abord :
   // la médiane 30 j publiée compte chaque jour de vente une seule fois. Plafond MAX_REFINE requêtes par nuit.
   let rReq = 0, rDone = 0, rStop = '';
-  const memo = new Map(), rbuf = [];
+  const rbuf = [];
   for (const c of rcand.sort((a, b) => b.usd - a.usd)) {
     if (rReq >= MAX_REFINE) { rStop = 'plafond de la passe'; break; }
-    const mk = c.pq.id + '|' + c.gk;
-    let r = memo.get(mk);
-    if (r === undefined) {
+    let q2 = c.pq, stop = false;
+    for (const gk of c.keys) {
       const t0 = Date.now();
-      const res = await fetch('/api/robot/pt?' + new URLSearchParams({ path: `/cards/${c.pq.id}/prices/${c.gk}/history`, period: '1y', limit: '365' }), { headers: { authorization: 'Bearer ' + await window.pvToken() } });
+      const res = await fetch('/api/robot/pt?' + new URLSearchParams({ path: `/cards/${c.pq.id}/prices/${gk}/history`, period: '1y', limit: '365' }), { headers: { authorization: 'Bearer ' + await window.pvToken() } });
       rReq++;
-      if (res.status === 429) { rStop = 'plafond de requêtes'; break; }
-      r = res.ok ? R.refineFromHistory((await res.json()).data ?? []) : null;
-      memo.set(mk, r);
+      if (res.status === 429) { rStop = 'plafond de requêtes'; stop = true; break; }
+      const r = res.ok ? R.refineFromHistory((await res.json()).data ?? []) : null;
+      if (r) {
+        const s0 = gk === 'NEAR_MINT' ? q2.raw.NM : q2.grades[gk], ns = { ...s0, usd: r.usd, count: Math.max(s0.count ?? 0, r.n), weak: false, basis: 'refined' };
+        q2 = gk === 'NEAR_MINT' ? { ...q2, raw: { ...q2.raw, NM: ns } } : { ...q2, grades: { ...q2.grades, [gk]: ns } };
+      }
       const wait = 350 - (Date.now() - t0); if (wait > 0) await new Promise(ok => setTimeout(ok, wait));
     }
-    if (!r) continue;
-    const s0 = c.raw ? c.pq.raw.NM : c.pq.grades[c.gk], ns = { ...s0, usd: r.usd, count: Math.max(s0.count ?? 0, r.n), weak: false, basis: 'refined' };
-    const q2 = c.raw ? { ...c.pq, raw: { ...c.pq.raw, NM: ns } } : { ...c.pq, grades: { ...c.pq.grades, [c.gk]: ns } };
-    const w = R.priceFor(c.s2, c.card, c.variant, 'EU', q2, false);
-    if (w.value == null || w.src === 'model') continue;
-    if (c.raw) rbuf.push({ key: c.key, eur: Math.round(w.value * 100) / 100 }); else gbuf[c.i].eur = Math.round(w.value * 100) / 100;
+    if (stop) break;
+    if (q2 === c.pq) continue;
+    // toutes les cotes de la carte recalculées avec le relevé affiné (même fonction que l'app : priceOf)
+    const nm = R.priceOf({ kind: 'raw', cond: 'NM' }, c.card, c.variant, 'EU', q2, false);
+    if (nm.value != null) rbuf.push({ key: c.nmKey, eur: Math.round(nm.value * 100) / 100 });
+    for (const [i, s2] of c.idx) { const w = R.priceOf(s2, c.card, c.variant, 'EU', q2, false); if (w.value != null && w.src !== 'model') gbuf[i].eur = Math.round(w.value * 100) / 100; }
     rDone++;
   }
   for (let i = 0; i < rbuf.length; i += 900) await post('/api/bulk', { cards: rbuf.slice(i, i + 900) });   // cotes brutes NM affinées (remplacent celles du jour)
-  log.push(`cotes affinées (détail des ventes, brut NM + gradé) : ${rDone} sur ${rcand.length} candidates (≥ 200 $), dont ${rbuf.length} brutes, ${rReq} requêtes${rStop ? ' (arrêt : ' + rStop + ')' : ''}`);
+  log.push(`cartes affinées (détail des ventes, brut NM + gradé) : ${rDone} sur ${rcand.length} candidates (≥ 200 $), ${rReq} requêtes${rStop ? ' (arrêt : ' + rStop + ')' : ''}`);
   // notes gradées et autres états, après les cotes brutes NM (prioritaires si le plafond d'écriture est atteint)
   let gsent = 0, gskip = 0, gsame = 0;
   for (let i = 0; i < gbuf.length; i += 900) { const r = await post('/api/bulk', { cards: gbuf.slice(i, i + 900) }); if (r.error) { log.push('bulk gradé : erreur ' + r.error); break; } gsent += r.n; gskip += r.skipped ?? 0; gsame += r.same ?? 0; if (r.ok === false) break; }
