@@ -1,4 +1,5 @@
-// Vérifie le relais public : détail des ventes PSA 9 de la Pikachu Munch
-const r = await fetch('https://getgradewise.app/pt/cards/019c009d-6841-7449-b387-48f207006945/prices/PSA_9/history?period=1y&limit=365');
-const j = await r.json().catch(() => null);
-console.log('RELAY', r.status, Array.isArray(j?.data) ? j.data.length + ' jours, dernier ' + JSON.stringify(j.data[0]) : JSON.stringify(j).slice(0, 200));
+// Vérifie le relais public : fiche PokeTrace par identifiant TCGplayer (Umbreon VMAX 215/203) et temps de réponse
+for (const u of ['https://getgradewise.app/pt/cards?tcgplayer_ids=246723&market=US&limit=5', 'https://getgradewise.app/pt/cards?tcgplayer_ids=246723&market=US&limit=5']) {
+  const t0 = Date.now(); const r = await fetch(u); const j = await r.json().catch(() => null);
+  console.log('RELAY', r.status, Date.now() - t0, 'ms', (j?.data ?? []).map(c => `${c.name} ${c.cardNumber} ${c.variant} grades=${Object.keys(c.prices?.ebay ?? {}).length}`).join(' | '));
+}
