@@ -1,6 +1,6 @@
 name: grading-fees
 on:
-  schedule: [{ cron: '23 6 * * 1' }]
+  schedule: [{ cron: '23 6 1 * *' }]
   workflow_dispatch:
 permissions: { contents: write, issues: write }
 jobs:

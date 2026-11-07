@@ -1,4 +1,4 @@
-// Surveillance des tarifs de grading : chaque semaine, relit les pages de tarifs officielles et compare les montants
+// Surveillance des tarifs de grading : chaque mois (le 1er), relit les pages de tarifs officielles et compare les montants
 // trouvés (€ / $) au dernier relevé. Changement, page inaccessible ou revue mensuelle → ticket GitHub (e-mail à Julien),
 // à traiter en mettant à jour src/lib/gradingFees.ts dans l'application.
 import fs from 'node:fs';
@@ -42,7 +42,7 @@ for (const s of SOURCES) {
 const monthly = new Date().getUTCDate() <= 7;   // première semaine du mois : revue complète, même sans changement détecté
 await browser.close();
 fs.writeFileSync(STATE, JSON.stringify(state, null, 1));
-// ticket chaque semaine seulement si un tarif a changé ; pages inaccessibles listées dans la revue mensuelle
+// revue mensuelle : ticket avec les changements détectés et les pages inaccessibles
 if (issues.length || monthly) {
   const body = `${issues.length ? 'Tarifs modifiés :\n\n' + issues.join('\n') : 'Aucun changement détecté sur les pages lisibles.'}${monthly && blocked.length ? '\n\nÀ contrôler à la main (pages non lisibles par le robot) :\n\n' + blocked.join('\n') : ''}\n\n${monthly ? '**Revue mensuelle** : vérifier aussi les délais annoncés et les niveaux suspendus ou rouverts (PSA Value, TAG…), puis demander à Claude de mettre à jour `src/lib/gradingFees.ts` (dates « vérifiés le »).' : ''}`;
   const title = `Tarifs de grading à vérifier (${new Date().toISOString().slice(0, 10)})`;
