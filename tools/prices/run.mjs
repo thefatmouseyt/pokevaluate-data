@@ -36,9 +36,17 @@ await p.waitForTimeout(3000);   // taux de change chargés
 
 const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULAR, MAX_SEEDS, MAX_PT }) => {
   const R = window.__pvRobot, log = [];
+  // envoi au serveur : 3 essais en cas de panne passagère (réponse non JSON, coupure réseau)
   const post = async (path, body) => {
-    const r = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + await window.pvToken() }, body: JSON.stringify(body) });
-    return r.ok ? r.json() : { error: r.status };
+    for (let i = 0; i < 3; i++) {
+      try {
+        const r = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + await window.pvToken() }, body: JSON.stringify(body) });
+        if (r.ok) return await r.json();
+        if (r.status < 500) return { error: r.status };
+      } catch { /* panne passagère */ }
+      await new Promise(ok => setTimeout(ok, 3000 * (i + 1)));
+    }
+    return { error: 'réseau' };
   };
   const pool = async (items, n, fn) => { let i = 0; await Promise.all(Array.from({ length: n }, async () => { while (i < items.length) { const x = items[i++]; try { await fn(x); } catch { /* carte ignorée */ } } })); };
 

@@ -26,7 +26,7 @@ await p.waitForTimeout(3000);
 const out = await p.evaluate(async ({ MAX_REQ }) => {
   const R = window.__pvRobot, log = [];
   const auth = async () => ({ authorization: 'Bearer ' + await window.pvToken() });
-  const post = async (path, body) => { const r = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json', ...(await auth()) }, body: JSON.stringify(body) }); return r.ok ? r.json() : { error: r.status }; };
+  const post = async (path, body) => { for (let i = 0; i < 3; i++) { try { const r = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json', ...(await auth()) }, body: JSON.stringify(body) }); if (r.ok) return await r.json(); if (r.status < 500) return { error: r.status }; } catch { /* panne passagère */ } await new Promise(ok => setTimeout(ok, 3000 * (i + 1))); } return { error: 'réseau' }; };
   let req = 0, stop = '';
   const pt = async params => {
     const t0 = Date.now();
