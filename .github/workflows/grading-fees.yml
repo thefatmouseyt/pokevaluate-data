@@ -1,0 +1,18 @@
+name: grading-fees
+on:
+  schedule: [{ cron: '23 6 * * 1' }]
+  workflow_dispatch:
+permissions: { contents: write, issues: write }
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 22 }
+      - run: node tools/fees/check.mjs
+        env: { GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}' }
+      - run: |
+          git config user.name "thefatmouseyt" && git config user.email "noreply@github.com"
+          git add tools/fees/state.json && git commit -m "Tarifs de grading : relevé hebdomadaire" || exit 0
+          git pull --rebase && git push
