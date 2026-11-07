@@ -87,6 +87,38 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
   // répartition des cotes par niveau de fiabilité (high = fiable, medium = correcte, low = à confirmer, none = sans donnée)
   const tally = () => ({ high: 0, medium: 0, low: 0, none: 0 });
   const relT = tally(), relB = tally(), relG = tally();
+  // 1 ter) PokeTrace Pro : liste paginée de toutes les cartes (20 par requête) avec leurs ventes eBay (brut + gradé)
+  // rattachées au catalogue par l'identifiant TCGplayer (correspondance exacte, sans recherche par nom)
+  // plafond côté serveur : 8 000 requêtes robot / jour (sur 10 000), cadence ≤ 3 requêtes / s (limite Pro : 30 / 10 s)
+  const ptq = new Map(); let ptReq = 0, ptCards = 0, ptStop = '', ptErr = 0;
+  for (const game of MAX_PT > 0 ? ['pokemon', 'pokemon-japanese'] : []) {
+    let cursor = '';
+    while (ptReq < MAX_PT) {
+      const t0 = Date.now();
+      const r = await fetch('/api/robot/pt?' + new URLSearchParams({ market: 'US', limit: '20', game, ...(cursor ? { cursor } : {}) }), { headers: { authorization: 'Bearer ' + await window.pvToken() } });
+      ptReq++;
+      if (r.status === 429) { const j = await r.json().catch(() => ({})); if (j.error === 'cap') { ptStop = 'plafond quotidien'; break; } await new Promise(ok => setTimeout(ok, 5000)); continue; }
+      if (!r.ok) { ptStop = 'erreur ' + r.status; if (++ptErr >= 5) break; await new Promise(ok => setTimeout(ok, 3000)); continue; }
+      ptErr = 0;
+      const j = await r.json();
+      for (const c of j.data ?? []) {
+        const tid = c.refs?.tcgplayerId; if (!tid) continue;
+        const q = R.toQuote(c);
+        if (!Object.keys(q.raw ?? {}).length && !Object.keys(q.grades ?? {}).length) continue;
+        ptq.set(`${tid}|${R.variantOfSub(c.variant ?? null)}`, q); ptCards++;
+      }
+      if (!j.pagination?.hasMore || !j.pagination?.nextCursor) break;
+      cursor = j.pagination.nextCursor;
+      const wait = 350 - (Date.now() - t0); if (wait > 0) await new Promise(ok => setTimeout(ok, wait));
+    }
+    if (ptStop === 'plafond quotidien') break;
+  }
+  log.push(`PokeTrace Pro : ${ptReq} requêtes, ${ptCards} cartes avec ventes eBay${ptStop ? ' (arrêt : ' + ptStop + ')' : ''}`);
+
+  // relevé PokeTrace de la nuit d'une carte (par son identifiant TCGplayer) : aucune requête supplémentaire par carte,
+  // notes affinées comme dans l'app (REFINE_KEYS)
+  const tidOf = m => m.tcgId ?? (String(m.cardId).startsWith('tp-') ? Number(String(m.cardId).slice(3)) : null);
+  const qOf = async m => { const pq = tidOf(m) ? ptq.get(`${tidOf(m)}|${m.variant}`) : null; return pq ? await R.refineAll(pq.id, pq).catch(() => pq) : undefined; };
   // 1) cartes suivies, toutes sources
   let done = 0, ok = 0;
   while (done < MAX_TRACKED) {
@@ -94,7 +126,8 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
     if (!r.items?.length) break;
     const cards = [], skip = [];
     await pool(r.items, 4, async it => {
-      const v = await R.revalue(it.meta, 'EU').catch(() => null);
+      const q = await qOf(it.meta);
+      const v = await R.revalue(it.meta, 'EU', q ? { q } : {}).catch(() => null);
       relT[v?.price.rel ?? 'none']++;
       if (v && v.price.value != null && v.price.rel !== 'none') { cards.push({ key: it.key, eur: Math.round(v.price.value * 100) / 100 }); ok++; } else skip.push(it.key);
     });
@@ -130,7 +163,8 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
   log.push(`cartes à fort potentiel : ${Math.min(seeds.length, MAX_SEEDS)} (${seeds.slice(0, MAX_SEEDS).map(s => s.meta.name).slice(0, 12).join(', ')}…)`);
   let pk = 0; const pcards = [];
   await pool(popular, 4, async ({ meta }) => {
-    const base = await R.revalue({ ...meta, sel: { kind: 'raw', cond: 'NM' } }, 'EU');
+    const q0 = await qOf(meta);
+    const base = await R.revalue({ ...meta, sel: { kind: 'raw', cond: 'NM' } }, 'EU', q0 ? { q: q0 } : {});
     if (!base) return;
     // notes gradées affinées par le détail des ventes (même calcul que la fiche carte)
     if (base.ptId && base.q) base.q = await R.refineAll(base.ptId, base.q).catch(() => base.q);
@@ -138,39 +172,11 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
     for (const sel of sels) {
       const v = R.priceOf(sel, base.card, meta.variant, 'EU', base.q, !!meta.vintage);
       if (sel.kind === 'graded' && sel.co === 'PSA' && sel.g === '10') relG[v.value == null ? 'none' : v.src === 'model' ? 'none' : v.rel]++;
-      if (v.value != null && v.rel !== 'none' && v.src !== 'model') { pcards.push({ key: R.historyKey(meta.cardId, meta.variant, sel), eur: Math.round(v.value * 100) / 100 }); pk++; }
+      if (v.value != null && v.rel !== 'none' && v.src !== 'model') { pcards.push({ key: R.historyKey(meta.cardId, meta.variant, sel), eur: Math.round(v.value * 100) / 100, rel: v.rel }); pk++; }
     }
   });
   for (let i = 0; i < pcards.length; i += 900) await post('/api/bulk', { cards: pcards.slice(i, i + 900) });
   log.push(`cartes les plus demandées : ${popular.length} cartes, ${pk} cotes (états bruts + notes gradées)`);
-
-  // 1 ter) PokeTrace Pro : liste paginée de toutes les cartes (20 par requête) avec leurs ventes eBay (brut + gradé)
-  // rattachées au catalogue par l'identifiant TCGplayer (correspondance exacte, sans recherche par nom)
-  // plafond côté serveur : 8 000 requêtes robot / jour (sur 10 000), cadence ≤ 3 requêtes / s (limite Pro : 30 / 10 s)
-  const ptq = new Map(); let ptReq = 0, ptCards = 0, ptStop = '', ptErr = 0;
-  for (const game of MAX_PT > 0 ? ['pokemon', 'pokemon-japanese'] : []) {
-    let cursor = '';
-    while (ptReq < MAX_PT) {
-      const t0 = Date.now();
-      const r = await fetch('/api/robot/pt?' + new URLSearchParams({ market: 'US', limit: '20', game, ...(cursor ? { cursor } : {}) }), { headers: { authorization: 'Bearer ' + await window.pvToken() } });
-      ptReq++;
-      if (r.status === 429) { const j = await r.json().catch(() => ({})); if (j.error === 'cap') { ptStop = 'plafond quotidien'; break; } await new Promise(ok => setTimeout(ok, 5000)); continue; }
-      if (!r.ok) { ptStop = 'erreur ' + r.status; if (++ptErr >= 5) break; await new Promise(ok => setTimeout(ok, 3000)); continue; }
-      ptErr = 0;
-      const j = await r.json();
-      for (const c of j.data ?? []) {
-        const tid = c.refs?.tcgplayerId; if (!tid) continue;
-        const q = R.toQuote(c);
-        if (!Object.keys(q.raw ?? {}).length && !Object.keys(q.grades ?? {}).length) continue;
-        ptq.set(`${tid}|${R.variantOfSub(c.variant ?? null)}`, q); ptCards++;
-      }
-      if (!j.pagination?.hasMore || !j.pagination?.nextCursor) break;
-      cursor = j.pagination.nextCursor;
-      const wait = 350 - (Date.now() - t0); if (wait > 0) await new Promise(ok => setTimeout(ok, wait));
-    }
-    if (ptStop === 'plafond quotidien') break;
-  }
-  log.push(`PokeTrace Pro : ${ptReq} requêtes, ${ptCards} cartes avec ventes eBay${ptStop ? ' (arrêt : ' + ptStop + ')' : ''}`);
 
   // 2) catalogue, cartes les plus chères d'abord : sources gratuites + ventes eBay PokeTrace quand la carte y figure
   const cat = await R.loadCatalog();
@@ -189,7 +195,7 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
     const v = await R.revalue({ cardId: `tp-${j.e.id}`, origin: 'tcgplayer', lang: j.e.lang, variant: j.variant, sel, vintage: false }, 'EU', { ebay: false, entry: j.e, ...(pq ? { q: pq } : {}) });
     relB[v?.price.rel ?? 'none']++;
     if (pq) withEbay++;
-    if (v && v.price.value != null) { got++; buf.push({ key: R.historyKey(`tp-${j.e.id}`, j.variant, sel), eur: Math.round(v.price.value * 100) / 100 }); }
+    if (v && v.price.value != null) { got++; buf.push({ key: R.historyKey(`tp-${j.e.id}`, j.variant, sel), eur: Math.round(v.price.value * 100) / 100, rel: v.price.rel }); }
     // carte à affiner (brut NM ou note gradée ≥ 200 $) : toutes ses cotes seront recalculées avec le relevé affiné
     const rk = v && pq?.id ? R.REFINE_KEYS.filter(k => ((k === 'NEAR_MINT' ? pq.raw?.NM : pq.grades?.[k])?.usd ?? 0) >= 200) : [];
     const rc = rk.length ? { card: v.card, variant: j.variant, pq, keys: rk, usd: Math.max(...rk.map(k => (k === 'NEAR_MINT' ? pq.raw.NM : pq.grades[k]).usd)), nmKey: R.historyKey(`tp-${j.e.id}`, j.variant, sel), idx: [] } : null;
@@ -201,7 +207,7 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
         const w = R.priceOf(s2, v.card, j.variant, 'EU', pq, false);
         if (s2.kind === 'graded' && s2.co === 'PSA' && s2.g === '10') relC[w.value == null || w.src === 'model' ? 'none' : w.rel]++;
         if (w.value != null && w.rel !== 'none' && w.src !== 'model') {
-          gbuf.push({ key: R.historyKey(`tp-${j.e.id}`, j.variant, s2), eur: Math.round(w.value * 100) / 100 });
+          gbuf.push({ key: R.historyKey(`tp-${j.e.id}`, j.variant, s2), eur: Math.round(w.value * 100) / 100, rel: w.rel });
           if (rc) rc.idx.push([gbuf.length - 1, s2]);
         }
         if (s2.kind === 'graded' && s2.co === 'PSA' && s2.g === '10' && w.value != null && w.src !== 'model' && pq.id && pq.grades?.PSA_10) hcand.push({ usd: j.usd * 3, ptId: pq.id, tier: 'PSA_10', key: R.historyKey(`tp-${j.e.id}`, j.variant, s2), eur: w.value });
@@ -233,8 +239,8 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
     if (q2 === c.pq) continue;
     // toutes les cotes de la carte recalculées avec le relevé affiné (même fonction que l'app : priceOf)
     const nm = R.priceOf({ kind: 'raw', cond: 'NM' }, c.card, c.variant, 'EU', q2, false);
-    if (nm.value != null) rbuf.push({ key: c.nmKey, eur: Math.round(nm.value * 100) / 100 });
-    for (const [i, s2] of c.idx) { const w = R.priceOf(s2, c.card, c.variant, 'EU', q2, false); if (w.value != null && w.src !== 'model') gbuf[i].eur = Math.round(w.value * 100) / 100; }
+    if (nm.value != null) rbuf.push({ key: c.nmKey, eur: Math.round(nm.value * 100) / 100, rel: nm.rel });
+    for (const [i, s2] of c.idx) { const w = R.priceOf(s2, c.card, c.variant, 'EU', q2, false); if (w.value != null && w.src !== 'model') { gbuf[i].eur = Math.round(w.value * 100) / 100; gbuf[i].rel = w.rel; } }
     rDone++;
   }
   for (let i = 0; i < rbuf.length; i += 900) await post('/api/bulk', { cards: rbuf.slice(i, i + 900) });   // cotes brutes NM affinées (remplacent celles du jour)
