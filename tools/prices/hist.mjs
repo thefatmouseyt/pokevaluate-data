@@ -3,9 +3,19 @@
 import { chromium } from 'playwright';
 const APP = 'https://pokevaluate.thefatmouse-yt.workers.dev';
 const MAX_REQ = Number(process.env.MAX_REQ || 5000);
+// Jeton d'identité GitHub (OIDC) : mis en cache 4 min et redemandé en cas de panne passagère (un échec ne doit plus arrêter le relevé)
+let tokCache = { v: '', t: 0 };
 async function token() {
-  const r = await fetch(`${process.env.ACTIONS_ID_TOKEN_REQUEST_URL}&audience=pokevaluate`, { headers: { Authorization: `Bearer ${process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}` } });
-  return (await r.json()).value;
+  if (tokCache.v && Date.now() - tokCache.t < 4 * 60e3) return tokCache.v;
+  for (let i = 0; i < 6; i++) {
+    try {
+      const r = await fetch(`${process.env.ACTIONS_ID_TOKEN_REQUEST_URL}&audience=pokevaluate`, { headers: { Authorization: `Bearer ${process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}` } });
+      const j = await r.json();
+      if (j.value) { tokCache = { v: j.value, t: Date.now() }; return j.value; }
+    } catch { /* panne passagère */ }
+    await new Promise(ok => setTimeout(ok, 2000 * 2 ** i));
+  }
+  return tokCache.v;   // dernier jeton connu (valable encore quelques minutes)
 }
 const b = await chromium.launch();
 const p = await b.newPage(); p.setDefaultTimeout(0);
