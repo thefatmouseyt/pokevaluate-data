@@ -8,7 +8,7 @@
 // Les cotes sont enregistrées sur le serveur de l'app (Cloudflare D1), authentifiées par le jeton OIDC de GitHub.
 import { chromium } from 'playwright';
 const APP = 'https://pokevaluate.thefatmouse-yt.workers.dev';
-const MAX_TRACKED = Number(process.env.MAX_TRACKED || 3000), MAX_BULK = Number(process.env.MAX_BULK || 35000), MIN_USD = Number(process.env.MIN_USD || 0.01), MAX_POPULAR = Number(process.env.MAX_POPULAR || 300), MAX_SEEDS = Number(process.env.MAX_SEEDS || 50), MAX_PT = Number(process.env.MAX_PT || 7000);
+const MAX_TRACKED = Number(process.env.MAX_TRACKED || 3000), MAX_BULK = Number(process.env.MAX_BULK || 35000), MIN_USD = Number(process.env.MIN_USD || 0.01), MAX_POPULAR = Number(process.env.MAX_POPULAR || 300), MAX_SEEDS = Number(process.env.MAX_SEEDS || 50), MAX_PT = Number(process.env.MAX_PT || 7000), MAX_REFINE = Number(process.env.MAX_REFINE || 2500);
 
 // Jeton d'identité GitHub (OIDC) : mis en cache 4 min et redemandé en cas de panne passagère (un échec ne doit plus arrêter le relevé)
 let tokCache = { v: '', t: 0 };
@@ -34,7 +34,7 @@ await p.goto(APP + '/?robot', { waitUntil: 'domcontentloaded' });
 await p.waitForFunction(() => window.__pvRobot, null, { timeout: 60000 });
 await p.waitForTimeout(3000);   // taux de change chargés
 
-const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULAR, MAX_SEEDS, MAX_PT }) => {
+const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULAR, MAX_SEEDS, MAX_PT, MAX_REFINE }) => {
   const R = window.__pvRobot, log = [];
   // envoi au serveur : 3 essais en cas de panne passagère (réponse non JSON, coupure réseau)
   const post = async (path, body) => {
@@ -132,6 +132,8 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
   await pool(popular, 4, async ({ meta }) => {
     const base = await R.revalue({ ...meta, sel: { kind: 'raw', cond: 'NM' } }, 'EU');
     if (!base) return;
+    // notes gradées affinées par le détail des ventes (même calcul que la fiche carte)
+    if (base.ptId && base.q) base.q = await R.refineGraded(base.ptId, base.q, Object.keys(base.q.grades ?? {})).catch(() => base.q);
     const sels = [...R.RAW.map(r => ({ kind: 'raw', cond: r.k })), ...Object.values(R.COMPANIES).flatMap(c => c.grades.map(g => ({ kind: 'graded', co: c.id, g: g.id })))];
     for (const sel of sels) {
       const v = R.priceFor(sel, base.card, meta.variant, 'EU', base.q, !!meta.vintage);
@@ -179,7 +181,7 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
   }
   jobs.sort((a, b) => b.usd - a.usd);
   const todo = jobs.slice(0, MAX_BULK);
-  let buf = [], sent = 0, same = 0, unch = 0, got = 0, withEbay = 0; const gbuf = [], relC = tally(), hcand = [];
+  let buf = [], sent = 0, same = 0, unch = 0, got = 0, withEbay = 0; const gbuf = [], relC = tally(), hcand = [], rcand = [];
   const flush = async () => { if (!buf.length) return; const c = buf; buf = []; const r = await post('/api/bulk', { cards: c }); if (!r.error) { sent += r.n; same += r.skipped ?? 0; unch += r.same ?? 0; } else log.push('bulk : erreur ' + r.error); };
   await pool(todo, 12, async j => {
     const sel = { kind: 'raw', cond: 'NM' };
@@ -194,13 +196,40 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
       for (const s2 of [...R.RAW.filter(r => r.k !== 'NM').map(r => ({ kind: 'raw', cond: r.k })), ...Object.values(R.COMPANIES).flatMap(c => c.grades.map(g => ({ kind: 'graded', co: c.id, g: g.id })))]) {
         const w = R.priceFor(s2, v.card, j.variant, 'EU', pq, false);
         if (s2.kind === 'graded' && s2.co === 'PSA' && s2.g === '10') relC[w.value == null || w.src === 'model' ? 'none' : w.rel]++;
-        if (w.value != null && w.rel !== 'none' && w.src !== 'model') gbuf.push({ key: R.historyKey(`tp-${j.e.id}`, j.variant, s2), eur: Math.round(w.value * 100) / 100 });
+        if (w.value != null && w.rel !== 'none' && w.src !== 'model') {
+          gbuf.push({ key: R.historyKey(`tp-${j.e.id}`, j.variant, s2), eur: Math.round(w.value * 100) / 100 });
+          const gk = s2.kind === 'graded' && pq.id ? R.gradeKeys(s2.co, s2.g).find(k => pq.grades?.[k]) : null;
+          if (gk && pq.grades[gk].usd >= 200 && w.src === 'ebay') rcand.push({ i: gbuf.length - 1, card: v.card, variant: j.variant, s2, pq, gk, usd: pq.grades[gk].usd });
+        }
         if (s2.kind === 'graded' && s2.co === 'PSA' && s2.g === '10' && w.value != null && w.src !== 'model' && pq.id && pq.grades?.PSA_10) hcand.push({ usd: j.usd * 3, ptId: pq.id, tier: 'PSA_10', key: R.historyKey(`tp-${j.e.id}`, j.variant, s2), eur: w.value });
       }
     }
     if (buf.length >= 500) await flush();
   });
   await flush();
+  // 2 bis) cotes gradées affinées par le détail des ventes (volume, fraîcheur, ventes isolées atténuées), les plus chères d'abord :
+  // la médiane 30 j publiée compte chaque jour de vente une seule fois. Plafond MAX_REFINE requêtes par nuit.
+  let rReq = 0, rDone = 0, rStop = '';
+  const memo = new Map();
+  for (const c of rcand.sort((a, b) => b.usd - a.usd)) {
+    if (rReq >= MAX_REFINE) { rStop = 'plafond de la passe'; break; }
+    const mk = c.pq.id + '|' + c.gk;
+    let r = memo.get(mk);
+    if (r === undefined) {
+      const t0 = Date.now();
+      const res = await fetch('/api/robot/pt?' + new URLSearchParams({ path: `/cards/${c.pq.id}/prices/${c.gk}/history`, period: '1y', limit: '365' }), { headers: { authorization: 'Bearer ' + await window.pvToken() } });
+      rReq++;
+      if (res.status === 429) { rStop = 'plafond de requêtes'; break; }
+      r = res.ok ? R.refineFromHistory((await res.json()).data ?? []) : null;
+      memo.set(mk, r);
+      const wait = 350 - (Date.now() - t0); if (wait > 0) await new Promise(ok => setTimeout(ok, wait));
+    }
+    if (!r) continue;
+    const q2 = { ...c.pq, grades: { ...c.pq.grades, [c.gk]: { ...c.pq.grades[c.gk], usd: r.usd, count: Math.max(c.pq.grades[c.gk].count ?? 0, r.n), weak: false, basis: 'refined' } } };
+    const w = R.priceFor(c.s2, c.card, c.variant, 'EU', q2, false);
+    if (w.value != null && w.src !== 'model') { gbuf[c.i].eur = Math.round(w.value * 100) / 100; rDone++; }
+  }
+  log.push(`cotes gradées affinées (détail des ventes) : ${rDone} sur ${rcand.length} candidates (≥ 200 $), ${rReq} requêtes${rStop ? ' (arrêt : ' + rStop + ')' : ''}`);
   // notes gradées et autres états, après les cotes brutes NM (prioritaires si le plafond d'écriture est atteint)
   let gsent = 0, gskip = 0, gsame = 0;
   for (let i = 0; i < gbuf.length; i += 900) { const r = await post('/api/bulk', { cards: gbuf.slice(i, i + 900) }); if (r.error) { log.push('bulk gradé : erreur ' + r.error); break; } gsent += r.n; gskip += r.skipped ?? 0; gsame += r.same ?? 0; if (r.ok === false) break; }
@@ -259,6 +288,6 @@ const out = await p.evaluate(async ({ MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULA
   await post('/api/robot/stats', { tracked: relT, catalog: relB, psa10: relG, points: st.points, cards: st.cards, days: st.days, nTracked: st.tracked, popular: popular.length });
   log.push(`base : ${st.points} relevés, ${st.cards} cartes, ${st.days} jours, ${st.tracked} cartes suivies`);
   return log;
-}, { MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULAR, MAX_SEEDS, MAX_PT });
+}, { MAX_TRACKED, MAX_BULK, MIN_USD, MAX_POPULAR, MAX_SEEDS, MAX_PT, MAX_REFINE });
 console.log(out.join('\n'));
 await b.close();
