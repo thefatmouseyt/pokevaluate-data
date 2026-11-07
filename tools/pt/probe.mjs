@@ -1,5 +1,6 @@
-// Vérifie le relais public : fiche PokeTrace par identifiant TCGplayer (Umbreon VMAX 215/203) et temps de réponse
-for (const u of ['https://getgradewise.app/pt/cards?tcgplayer_ids=246723&market=US&limit=5', 'https://getgradewise.app/pt/cards?tcgplayer_ids=246723&market=US&limit=5']) {
-  const t0 = Date.now(); const r = await fetch(u); const j = await r.json().catch(() => null);
-  console.log('RELAY', r.status, Date.now() - t0, 'ms', (j?.data ?? []).map(c => `${c.name} ${c.cardNumber} ${c.variant} grades=${Object.keys(c.prices?.ebay ?? {}).length}`).join(' | '));
-}
+// Sonde : Charizard 014/P (promo japonaise)
+const APP = 'https://pokevaluate.thefatmouse-yt.workers.dev';
+const tok = (await (await fetch(`${process.env.ACTIONS_ID_TOKEN_REQUEST_URL}&audience=pokevaluate`, { headers: { Authorization: `Bearer ${process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}` } })).json()).value;
+const get = async qs => { const r = await fetch(`${APP}/api/robot/pt?${qs}`, { headers: { authorization: 'Bearer ' + tok } }); try { return await r.json(); } catch { return null; } };
+for (const qs of ['market=US&limit=20&game=pokemon-japanese&card_number=014%2FP', 'market=US&limit=20&game=pokemon-japanese&search=charizard%20014', 'market=US&limit=20&search=charizard%20014%2FP', 'market=US&limit=20&game=pokemon-japanese&search=charizard%20promo'])
+  for (const c of (await get(qs))?.data ?? []) console.log('HIT', qs.slice(0, 60), '|', c.id, c.name, c.cardNumber, c.set?.name, c.variant, 'tcg', c.refs?.tcgplayerId, 'NM', JSON.stringify(c.prices?.ebay?.NEAR_MINT ?? null).slice(0, 200), 'keys', Object.keys(c.prices?.ebay ?? {}).join(','));
