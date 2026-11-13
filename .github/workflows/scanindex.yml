@@ -1,0 +1,33 @@
+name: Index du scan (reconnaissance d'image)
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "13 7 * * 1"   # chaque lundi, après les empreintes : nouvelles cartes du catalogue
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v5
+      # scripts tenus dans le dépôt privé : copiés ici le temps du passage (jeton en lecture seule)
+      - env: { SCRIPTS_TOKEN: "${{ secrets.SCRIPTS_TOKEN }}" }
+        run: |
+          [ -z "$SCRIPTS_TOKEN" ] && exit 0
+          git clone -q --depth 1 "https://x-access-token:${SCRIPTS_TOKEN}@github.com/thefatmouseyt/pokevaluate.git" "$RUNNER_TEMP/p"
+          mkdir -p tools && cp -r "$RUNNER_TEMP/p/robots/." tools/ && rm -rf "$RUNNER_TEMP/p"
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - uses: actions/cache@v4
+        with: { path: imgcache, key: "imgcache-${{ github.run_id }}", restore-keys: "imgcache-" }
+      - uses: actions/cache@v4
+        with: { path: embscan, key: "embscan-${{ github.run_id }}", restore-keys: "embscan-" }
+      - run: pip install --quiet torch torchvision --index-url https://download.pytorch.org/whl/cpu && pip install --quiet timm numpy pillow requests onnx onnxruntime onnxscript
+      - run: python tools/scan/build_scan_index.py
+        env: { IMG_DIR: imgcache, EMB_DIR: embscan }
+      - name: Publier
+        run: |
+          git config user.name "pokevaluate-bot"; git config user.email "noreply@github.com"
+          git add -A index/scan
+          git diff --cached --quiet || (git commit -m "Index du scan mis à jour" && git pull --rebase -q && git push)
