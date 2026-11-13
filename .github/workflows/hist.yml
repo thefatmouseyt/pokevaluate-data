@@ -1,0 +1,39 @@
+name: hist
+on:
+  # Growth (50 000 requêtes / jour, remis à zéro à minuit UTC) : après le relevé de nuit, l'historique consomme le reste
+  # du quota du jour ; chaque passage s'arrête dès que le plafond du robot est atteint (erreur « cap »)
+  schedule:
+    - cron: '7 9 * * *'
+    - cron: '7 15 * * *'
+    - cron: '37 20 * * *'
+  workflow_dispatch:
+    inputs:
+      max_req: { description: 'Requêtes PokeTrace maximum (par robot)', default: '17000' }
+      only: { description: 'Identifiants catalogue à traiter tout de suite (séparés par des virgules)', default: '' }
+permissions: { id-token: write, contents: read }
+concurrency: { group: hist, cancel-in-progress: false }
+jobs:
+  h:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy: { matrix: { shard: [0, 1, 2] }, fail-fast: false }
+    steps:
+      - uses: actions/checkout@v5
+      # scripts tenus dans le dépôt privé : copiés ici le temps du passage (jeton en lecture seule)
+      - env: { SCRIPTS_TOKEN: "${{ secrets.SCRIPTS_TOKEN }}" }
+        run: |
+          [ -z "$SCRIPTS_TOKEN" ] && exit 0
+          git clone -q --depth 1 "https://x-access-token:${SCRIPTS_TOKEN}@github.com/thefatmouseyt/pokevaluate.git" "$RUNNER_TEMP/p"
+          mkdir -p tools && cp -r "$RUNNER_TEMP/p/robots/." tools/ && rm -rf "$RUNNER_TEMP/p"
+      - uses: actions/setup-node@v5
+        with: { node-version: 22 }
+      - run: npm i --no-save playwright@1.48.2 && (npx playwright install --with-deps chromium || (sleep 60 && npx playwright install --with-deps chromium) || npx playwright install chromium)
+      - run: node tools/prices/hist.mjs
+        env:
+          MAX_REQ: ${{ github.event.inputs.max_req || '17000' }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: 3
+          ONLY: ${{ github.event.inputs.only || '' }}
+      # battement de fin (réussi ou non) : santé de l'app et alertes à l'administrateur
+      - if: always()
+        run: node tools/beat.mjs hist ${{ job.status }}

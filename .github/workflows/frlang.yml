@@ -1,0 +1,43 @@
+name: Cartes françaises (coefficient édition française)
+on:
+  # chaque jour avant le relevé des cotes françaises (11:37)
+  schedule: [{ cron: '47 3 * * *' }]
+  workflow_dispatch:
+    inputs:
+      max_req: { description: 'Requêtes PokeTrace maximum', default: '8000' }
+permissions: { id-token: write, contents: write }
+concurrency: { group: frlang, cancel-in-progress: false }
+jobs:
+  frlang:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v5
+      # scripts tenus dans le dépôt privé : copiés ici le temps du passage (jeton en lecture seule)
+      - env: { SCRIPTS_TOKEN: "${{ secrets.SCRIPTS_TOKEN }}" }
+        run: |
+          [ -z "$SCRIPTS_TOKEN" ] && exit 0
+          git clone -q --depth 1 "https://x-access-token:${SCRIPTS_TOKEN}@github.com/thefatmouseyt/pokevaluate.git" "$RUNNER_TEMP/p"
+          mkdir -p tools && cp -r "$RUNNER_TEMP/p/robots/." tools/ && rm -rf "$RUNNER_TEMP/p"
+      - uses: actions/setup-node@v5
+        with: { node-version: 22 }
+      - run: node tools/prices/frlang.mjs
+        env:
+          MAX_REQ: ${{ github.event.inputs.max_req || '8000' }}
+      - run: |
+          git config user.name "pokevaluate-bot"; git config user.email "noreply@github.com"
+          git add index/frlang.json index/gradedfr.json 2>/dev/null || true
+          git diff --cached --quiet || (git commit -m "Coefficients édition française" && git pull --rebase -q && git push)
+          for f in frlang gradedfr; do curl -s "https://purge.jsdelivr.net/gh/thefatmouseyt/pokevaluate-data@main/index/$f.json" > /dev/null || true; done
+      # battement (avant le passage sur la branche « snapshots », qui retire les outils) : santé de l'app et alertes à l'administrateur
+      - if: always()
+        run: node tools/beat.mjs frlang ${{ job.status }}
+      # relevé brut de toutes les langues : branche « snapshots » (un fichier compressé par jour, hors app)
+      - run: |
+          ls snap/*.json >/dev/null 2>&1 || exit 0
+          gzip -9 snap/*.json && mkdir -p /tmp/s && mv snap/*.gz /tmp/s/
+          git fetch -q origin snapshots && git checkout -q snapshots || git checkout -q --orphan snapshots
+          git rm -rq --cached . 2>/dev/null || true
+          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name langs -exec rm -rf {} +
+          mkdir -p langs && cp /tmp/s/*.gz langs/
+          git add langs && git commit -qm "Relevé des langues $(date -u +%F)" && git push -q origin snapshots

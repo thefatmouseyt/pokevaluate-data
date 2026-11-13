@@ -1,0 +1,34 @@
+name: Cartes chinoises (Cardmarket)
+on:
+  # chaque jour après le relevé de nuit : liste, cotes du jour et historique 1 an des cartes chinoises
+  schedule: [{ cron: '23 8 * * *' }]
+  workflow_dispatch:
+    inputs:
+      max_req: { description: 'Requêtes PokeTrace maximum', default: '15000' }
+permissions: { id-token: write, contents: write }
+concurrency: { group: cn, cancel-in-progress: false }
+jobs:
+  cn:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v5
+      # scripts tenus dans le dépôt privé : copiés ici le temps du passage (jeton en lecture seule)
+      - env: { SCRIPTS_TOKEN: "${{ secrets.SCRIPTS_TOKEN }}" }
+        run: |
+          [ -z "$SCRIPTS_TOKEN" ] && exit 0
+          git clone -q --depth 1 "https://x-access-token:${SCRIPTS_TOKEN}@github.com/thefatmouseyt/pokevaluate.git" "$RUNNER_TEMP/p"
+          mkdir -p tools && cp -r "$RUNNER_TEMP/p/robots/." tools/ && rm -rf "$RUNNER_TEMP/p"
+      - uses: actions/setup-node@v5
+        with: { node-version: 22 }
+      - run: node tools/prices/cn.mjs
+        env:
+          MAX_REQ: ${{ github.event.inputs.max_req || '15000' }}
+      - run: |
+          git config user.name "pokevaluate-bot"; git config user.email "noreply@github.com"
+          git add index/cn.json 2>/dev/null || true
+          git diff --cached --quiet || (git commit -m "Index des cartes chinoises" && git pull --rebase -q && git push)
+          curl -s "https://purge.jsdelivr.net/gh/thefatmouseyt/pokevaluate-data@main/index/cn.json" > /dev/null || true
+      # battement de fin (réussi ou non) : santé de l'app et alertes à l'administrateur
+      - if: always()
+        run: node tools/beat.mjs cn ${{ job.status }}

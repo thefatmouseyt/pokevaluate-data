@@ -1,0 +1,28 @@
+name: Diagnostic (fiabilité par langue)
+on:
+  workflow_dispatch:
+    inputs:
+      g: { description: 'Langues (EN,JP,FR,CN)', default: 'EN,JP' }
+      n: { description: 'Cartes par langue', default: '250' }
+      script: { description: 'Script (rel, qc)', default: 'rel' }
+permissions: { id-token: write, contents: read }
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      # scripts tenus dans le dépôt privé : copiés ici le temps du passage (jeton en lecture seule)
+      - env: { SCRIPTS_TOKEN: "${{ secrets.SCRIPTS_TOKEN }}" }
+        run: |
+          [ -z "$SCRIPTS_TOKEN" ] && exit 0
+          git clone -q --depth 1 "https://x-access-token:${SCRIPTS_TOKEN}@github.com/thefatmouseyt/pokevaluate.git" "$RUNNER_TEMP/p"
+          mkdir -p tools && cp -r "$RUNNER_TEMP/p/robots/." tools/ && rm -rf "$RUNNER_TEMP/p"
+      - uses: actions/setup-node@v5
+        with: { node-version: 22 }
+      - run: npm i --no-save playwright@1.48.2 && (npx playwright install --with-deps chromium || (sleep 60 && npx playwright install --with-deps chromium) || npx playwright install chromium)
+      - run: node tools/diag/${{ github.event.inputs.script || 'rel' }}.mjs
+        env: { N: '${{ github.event.inputs.n }}', G: '${{ github.event.inputs.g }}' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: diag, path: '*.json', if-no-files-found: ignore }

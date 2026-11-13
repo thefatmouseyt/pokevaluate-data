@@ -1,0 +1,10 @@
+name: check
+on: workflow_dispatch
+jobs:
+  c:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          for k in 'tp-246723|holo|raw:NM' 'tp-246723|holo|PSA:10'; do
+            curl -s "https://getgradewise.app/api/history/card?key=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))" "$k")" | python3 -c "import json,sys;d=json.load(sys.stdin);print('$k',len(d),d[0] if d else None,d[-1] if d else None)"
+          done

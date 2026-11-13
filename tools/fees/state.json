@@ -1,0 +1,51 @@
+{
+ "CGC": {
+  "url": "https://www.cgccards.com/submit/",
+  "amounts": [
+   "$39"
+  ],
+  "checked": "2026-11-07"
+ },
+ "TAG": {
+  "url": "https://help.taggrading.com/en/articles/10692075-what-are-tag-s-available-grading-services",
+  "amounts": [
+   "$1000",
+   "$149.95",
+   "$1500",
+   "$250",
+   "$2500",
+   "$299.95",
+   "$500",
+   "$5000",
+   "$59.95",
+   "$79.95"
+  ],
+  "checked": "2026-11-07"
+ },
+ "CCC": {
+  "url": "https://cccgrading.com/en/prices",
+  "amounts": [
+   "100€",
+   "101€",
+   "10€",
+   "15€",
+   "1€",
+   "20€",
+   "23€",
+   "27€",
+   "300€",
+   "31€",
+   "3€",
+   "40€",
+   "500€",
+   "501€",
+   "50€",
+   "51€",
+   "5€",
+   "6.90€",
+   "9€",
+   "€101"
+  ],
+  "checked": "2026-11-07"
+ }
+}

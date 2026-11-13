@@ -1,0 +1,31 @@
+name: Copie contrôlée du catalogue
+on:
+  # chaque nuit avant le relevé des cotes (02:41 UTC), et l'après-midi
+  schedule: [{ cron: '11 2,14 * * *' }]
+  workflow_dispatch:
+permissions: { id-token: write, contents: write }
+concurrency: { group: catalog, cancel-in-progress: false }
+jobs:
+  catalog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      # scripts tenus dans le dépôt privé : copiés ici le temps du passage (jeton en lecture seule)
+      - env: { SCRIPTS_TOKEN: "${{ secrets.SCRIPTS_TOKEN }}" }
+        run: |
+          [ -z "$SCRIPTS_TOKEN" ] && exit 0
+          git clone -q --depth 1 "https://x-access-token:${SCRIPTS_TOKEN}@github.com/thefatmouseyt/pokevaluate.git" "$RUNNER_TEMP/p"
+          mkdir -p tools && cp -r "$RUNNER_TEMP/p/robots/." tools/ && rm -rf "$RUNNER_TEMP/p"
+      - uses: actions/setup-node@v5
+        with: { node-version: 22 }
+      - run: node tools/catalog.mjs
+      - if: always()
+        run: node tools/beat.mjs catalog ${{ job.status }}
+      # branche « catalog » : un seul commit, remplacé à chaque passage (pas d'historique qui grossit)
+      - run: |
+          git config user.name "pokevaluate-bot"; git config user.email "noreply@github.com"
+          git checkout -q --orphan catalog-new && git rm -rfq --cached . && find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          mkdir -p data && cp /tmp/catalog/data/catalog.json data/
+          git add data && git commit -qm "Catalogue du $(date -u +%F)" && git push -qf origin catalog-new:catalog
+          curl -s "https://purge.jsdelivr.net/gh/thefatmouseyt/pokevaluate-data@catalog/data/catalog.json" > /dev/null || true

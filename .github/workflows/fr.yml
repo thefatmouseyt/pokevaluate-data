@@ -1,0 +1,25 @@
+name: Correspondance cartes françaises
+on:
+  # chaque nuit : les nouvelles cartes françaises (TCGdex) reliées au catalogue dès leur sortie
+  schedule: [{ cron: "11 4 * * *" }]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # scripts tenus dans le dépôt privé : copiés ici le temps du passage (jeton en lecture seule)
+      - env: { SCRIPTS_TOKEN: "${{ secrets.SCRIPTS_TOKEN }}" }
+        run: |
+          [ -z "$SCRIPTS_TOKEN" ] && exit 0
+          git clone -q --depth 1 "https://x-access-token:${SCRIPTS_TOKEN}@github.com/thefatmouseyt/pokevaluate.git" "$RUNNER_TEMP/p"
+          mkdir -p tools && cp -r "$RUNNER_TEMP/p/robots/." tools/ && rm -rf "$RUNNER_TEMP/p"
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install --quiet requests
+      - run: python tools/build_fr.py
+      - run: |
+          git config user.name "pokevaluate-bot"; git config user.email "noreply@github.com"
+          git add index/fr.json && (git diff --cached --quiet || (git commit -m "Correspondance FR" && git push))

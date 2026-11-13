@@ -1,0 +1,35 @@
+name: Cartes françaises (cotes et historique)
+on:
+  # chaque jour : cote de toutes les cartes françaises, puis historique 1 an des cartes pas encore complétées
+  schedule: [{ cron: '37 11 * * *' }]
+  workflow_dispatch:
+    inputs:
+      max_req: { description: 'Requêtes PokeTrace maximum (par robot)', default: '8000' }
+      limit: { description: 'Essai : nombre de cartes par robot (0 = toutes)', default: '0' }
+permissions: { id-token: write, contents: read }
+concurrency: { group: frp, cancel-in-progress: false }
+jobs:
+  fr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy: { matrix: { shard: [0, 1, 2] }, fail-fast: false }
+    steps:
+      - uses: actions/checkout@v5
+      # scripts tenus dans le dépôt privé : copiés ici le temps du passage (jeton en lecture seule)
+      - env: { SCRIPTS_TOKEN: "${{ secrets.SCRIPTS_TOKEN }}" }
+        run: |
+          [ -z "$SCRIPTS_TOKEN" ] && exit 0
+          git clone -q --depth 1 "https://x-access-token:${SCRIPTS_TOKEN}@github.com/thefatmouseyt/pokevaluate.git" "$RUNNER_TEMP/p"
+          mkdir -p tools && cp -r "$RUNNER_TEMP/p/robots/." tools/ && rm -rf "$RUNNER_TEMP/p"
+      - uses: actions/setup-node@v5
+        with: { node-version: 22 }
+      - run: npm i --no-save playwright@1.48.2 && (npx playwright install --with-deps chromium || (sleep 60 && npx playwright install --with-deps chromium) || npx playwright install chromium)
+      - run: node tools/prices/fr.mjs
+        env:
+          MAX_REQ: ${{ github.event.inputs.max_req || '8000' }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: 3
+          LIMIT: ${{ github.event.inputs.limit || '0' }}
+      # battement de fin (réussi ou non) : santé de l'app et alertes à l'administrateur
+      - if: always()
+        run: node tools/beat.mjs fr-${{ matrix.shard }} ${{ job.status }}
