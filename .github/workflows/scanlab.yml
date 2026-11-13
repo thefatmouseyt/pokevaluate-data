@@ -1,0 +1,30 @@
+name: Laboratoire du scan
+on:
+  workflow_dispatch:
+    inputs:
+      script: { description: 'Script (dossier scan/)', default: 'eval_embed' }
+      models: { description: 'Modèles (séparés par des virgules)', default: '' }
+      limit: { description: 'Nombre de cartes (0 : toutes)', default: '0' }
+permissions: { contents: read }
+jobs:
+  lab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v5
+      # scripts tenus dans le dépôt privé : copiés ici le temps du passage (jeton en lecture seule)
+      - env: { SCRIPTS_TOKEN: "${{ secrets.SCRIPTS_TOKEN }}" }
+        run: |
+          [ -z "$SCRIPTS_TOKEN" ] && exit 0
+          git clone -q --depth 1 "https://x-access-token:${SCRIPTS_TOKEN}@github.com/thefatmouseyt/pokevaluate.git" "$RUNNER_TEMP/p"
+          mkdir -p tools && cp -r "$RUNNER_TEMP/p/robots/." tools/ && rm -rf "$RUNNER_TEMP/p"
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - uses: actions/cache@v4
+        with: { path: imgcache, key: "imgcache-${{ github.run_id }}", restore-keys: "imgcache-" }
+      - run: pip install --quiet torch torchvision --index-url https://download.pytorch.org/whl/cpu && pip install --quiet timm numpy pillow requests onnx onnxruntime onnxscript
+      - run: python tools/scan/${{ github.event.inputs.script || 'eval_embed' }}.py
+        env: { MODELS_IN: '${{ github.event.inputs.models }}', LIMIT: '${{ github.event.inputs.limit }}', IMG_DIR: imgcache }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: scanlab, path: out, if-no-files-found: ignore, retention-days: 7 }
