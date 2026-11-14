@@ -1,0 +1,16 @@
+name: Rafraîchir l'hébergeur de fichiers
+on: { workflow_dispatch: }
+permissions: { contents: read }
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: |
+          for f in index/fr.json index/cn.json index/frlang.json index/gradedfr.json index/twins.json index/meta.json index/ids.bin index/coarse.bin; do
+            echo "$f $(curl -s -o /dev/null -w '%{http_code}' "https://purge.jsdelivr.net/gh/thefatmouseyt/pokevaluate-data@main/$f")"
+          done
+          sleep 20
+          for u in "@main/index/fr.json" "@main/index/twins.json" "@scan/meta.json" "@scan/model.onnx.0" "@scan/emb.bin" "@scanrt/ort-wasm-simd-threaded.wasm" "@scanrt/ort.wasm.min.js"; do
+            echo "$u $(curl -s -o /dev/null -w '%{http_code} %{size_download}' "https://cdn.jsdelivr.net/gh/thefatmouseyt/pokevaluate-data$u")"
+          done

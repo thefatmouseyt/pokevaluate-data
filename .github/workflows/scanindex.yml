@@ -26,8 +26,11 @@ jobs:
       - run: pip install --quiet torch torchvision --index-url https://download.pytorch.org/whl/cpu && pip install --quiet timm numpy pillow requests onnx onnxruntime onnxscript
       - run: python tools/scan/build_scan_index.py
         env: { IMG_DIR: imgcache, EMB_DIR: embscan }
+      # branche « scan » : un seul commit, remplacé à chaque passage (hors de la branche principale : limite de 50 Mo par branche chez l'hébergeur)
       - name: Publier
         run: |
           git config user.name "pokevaluate-bot"; git config user.email "noreply@github.com"
-          git add -A index/scan
-          git diff --cached --quiet || (git commit -m "Index du scan mis à jour" && git pull --rebase -q && git push)
+          rm -rf /tmp/scan && cp -r index/scan /tmp/scan
+          git checkout -q --orphan scan-new && git rm -rfq --cached . && find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          cp /tmp/scan/* . && git add -A && git commit -qm "Index du scan du $(date -u +%F)" && git push -qf origin scan-new:scan
+          for f in meta.json ids.bin emb.bin pca.bin; do curl -s "https://purge.jsdelivr.net/gh/thefatmouseyt/pokevaluate-data@scan/$f" > /dev/null || true; done
