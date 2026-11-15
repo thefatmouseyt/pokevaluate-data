@@ -2,7 +2,7 @@ name: Annonces eBay.fr (contrôle des cotes FR)
 on:
   workflow_dispatch:
     inputs:
-      calls: { description: "Nombre maximal d'appels eBay", default: '1500' }
+      calls: { description: "Nombre maximal d'appels eBay", default: '3000' }
   schedule:
     - cron: "37 6 * * *"
 permissions:
@@ -23,7 +23,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
       - run: node tools/prices/ebfr.mjs
-        env: { MAX_CALLS: "${{ github.event.inputs.calls || '1500' }}" }
+        env: { MAX_CALLS: "${{ github.event.inputs.calls || '3000' }}" }
       - name: Publier
         run: |
           git config user.name "pokevaluate-bot"; git config user.email "noreply@github.com"
