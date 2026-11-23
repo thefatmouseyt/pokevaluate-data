@@ -1,0 +1,23 @@
+name: Rapport quotidien (remplissage des cotes)
+on:
+  # chaque matin après le relevé de nuit : niveau de remplissage EN / FR / JP / CN envoyé à l'administrateur (message + notification)
+  schedule: [{ cron: '53 6 * * *' }]
+  workflow_dispatch:
+permissions: { id-token: write, contents: read }
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      # scripts tenus dans le dépôt privé : copiés ici le temps du passage (jeton en lecture seule)
+      - env: { SCRIPTS_TOKEN: "${{ secrets.SCRIPTS_TOKEN }}" }
+        run: |
+          [ -z "$SCRIPTS_TOKEN" ] && exit 0
+          git clone -q --depth 1 "https://x-access-token:${SCRIPTS_TOKEN}@github.com/thefatmouseyt/pokevaluate.git" "$RUNNER_TEMP/p"
+          mkdir -p tools && cp -r "$RUNNER_TEMP/p/robots/." tools/ && rm -rf "$RUNNER_TEMP/p"
+      - uses: actions/setup-node@v5
+        with: { node-version: 22 }
+      - run: node tools/report.mjs
+      - if: always()
+        run: node tools/beat.mjs report ${{ job.status }}
